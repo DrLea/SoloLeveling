@@ -51,6 +51,15 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 1. In Claude, connect the **Google Drive** connector.
 2. The scheduled task runs every day at 04:00 Tashkent (23:00 UTC). It reads `system-db.json` and writes `ai-plan-<date>.json` into the `SoloSystem` folder, following `PLANNER_SPEC.md`.
 
+## v2 additions
+- **Record tab:** a month calendar. Darker squares mean more EXP, a gold dot means the daily quest was cleared, red means it was failed. Tap a day to see everything you did.
+- **Dungeons:** tick "⚔ Dungeon" on a big task. It gets its own progress bar on the Tasks tab, and clearing it gives you a **medal** kept on the Status tab. Tasks the AI splits into 4+ subtasks become dungeons automatically.
+- **Shadow army:** every finished task rises as a shadow, shown by rank on the Status tab.
+- **System items** (Shop): Skip Token (drop one quest with no penalty), Streak Shield (used automatically when a daily quest fails, so the streak survives), EXP Potion (double EXP until the reset).
+- **Awakening:** levels never cap. From level 30 you can Awaken — level back to 1, every stat, medal, title and coin kept, plus a permanent +10% EXP each time.
+- **Android back button** steps back through tabs and closes dialogs instead of closing the app.
+- **Sync:** changes save locally at once and go to Drive about a second later. The Google token lasts an hour, so the app renews it in the background, retries when you tap the screen, and syncs when you open, leave or close the app. Nothing is lost while offline — the sync badge shows "saved here" and it uploads on the next connection.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 

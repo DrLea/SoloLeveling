@@ -155,3 +155,39 @@ label{display:block;font-size:13px;letter-spacing:.08em;text-transform:uppercase
 .spin{display:inline-block;animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 hr{border:0;border-top:1px solid var(--line-soft);margin:16px 0}
 code{background:rgba(63,169,255,.1);padding:1px 5px;border-radius:3px;font-size:14px}
+
+/* ---- v2: dungeons, calendar, medals, shadows, items ---- */
+.bottomnav button{font-size:11px}
+.dungeon{border:1px solid var(--line-soft);border-left:3px solid var(--accent);border-radius:var(--r);background:rgba(8,16,36,.6);padding:12px;margin:8px 0}
+.dungeon.A{border-left-color:var(--A)}.dungeon.S{border-left-color:var(--S)}.dungeon.B{border-left-color:var(--B)}
+.dungeon .progress{margin:10px 0 0}
+.item-ico{font-size:22px;width:28px;text-align:center}
+.owned{color:var(--green);font-size:13px}
+
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal-h{text-align:center;font-size:11px;color:var(--muted);letter-spacing:.1em;padding-bottom:2px}
+.cal-d{position:relative;aspect-ratio:1;border:1px solid var(--line-soft);border-radius:4px;background:rgba(63,169,255,calc(var(--a)*.55));display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:0;color:var(--text);font-size:13px}
+.cal-d i{font-style:normal;font-size:10px;color:#cfe9ff;opacity:.85}
+.cal-d.today{border-color:var(--accent);box-shadow:0 0 8px rgba(63,169,255,.6)}
+.cal-d.sel{outline:2px solid var(--accent);outline-offset:-2px}
+.cal-d.cleared:after{content:"";position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 6px var(--gold)}
+.cal-d.failed{border-color:var(--red);background:rgba(255,77,109,.16)}
+.cal-legend{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;margin-top:10px}
+.lg{width:10px;height:10px;border-radius:2px;display:inline-block}
+.lg.cleared{background:var(--gold)}.lg.failed{background:rgba(255,77,109,.6)}.lg.xp{background:rgba(63,169,255,.55)}
+.log-row{display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--line-soft);font-size:15px}
+.log-row:last-child{border-bottom:0}
+.log-row .li{width:18px;text-align:center;color:var(--accent)}
+
+.medals{display:flex;flex-direction:column;gap:10px}
+.medal{display:flex;align-items:center;gap:12px}
+.medal small{display:block;font-size:12px}
+.mdisc{width:38px;height:38px;min-width:38px;border-radius:50%;display:grid;place-items:center;font-family:Orbitron;font-weight:900;font-size:14px;color:#04060d;background:radial-gradient(circle at 30% 30%,#fff6d0,var(--gold));box-shadow:0 0 12px rgba(255,207,90,.55)}
+.medal.S .mdisc{background:radial-gradient(circle at 30% 30%,#ffd9e0,var(--S));box-shadow:0 0 12px rgba(255,77,109,.6)}
+.medal.A .mdisc{background:radial-gradient(circle at 30% 30%,#ffe3c2,var(--A))}
+.medal.B .mdisc{background:radial-gradient(circle at 30% 30%,#e6d6ff,var(--B))}
+
+.shadows{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px}
+.shadow{border:1px solid var(--line-soft);border-radius:4px;padding:6px 8px;font-size:12px;background:linear-gradient(180deg,rgba(63,169,255,.10),transparent);color:#b9d6f5;overflow:hidden}
+.shadow span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shadow.B{border-color:rgba(176,124,255,.5)}.shadow.A{border-color:rgba(255,159,67,.5)}.shadow.S{border-color:rgba(255,77,109,.6);box-shadow:0 0 8px rgba(255,77,109,.25)}
