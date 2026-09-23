@@ -67,6 +67,7 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **▶ Focus timer (optional):** start it if you want the real minutes measured. Ticking a quest done never needs it, and the measured times teach Claude how long things actually take you.
 - **Note to the System:** a note you edit through the day on the Quests screen. Claude reads the last 3 days of notes when planning and adjusts. Each day's note is kept and shown in Record.
 - **Standing orders** (System tab): permanent rules every plan must respect.
+- **💬 Message to the System per task:** the 💬 button on a task row (or the field in its edit screen) holds a note about that one task — how to split it, when it can be scheduled, what it needs. Claude reads it when it splits and assigns that task.
 
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).

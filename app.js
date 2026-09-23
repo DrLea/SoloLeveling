@@ -149,7 +149,7 @@ function newTask(title, extra = {}) {
   const t = {
     id: uid(), title: title.trim(), notes: '', done: false, doneAt: 0, createdAt: now(), updatedAt: now(), deleted: false,
     deadline: '', rank: 'E', stat: guessStat(title), subtasks: [], reward: { text: '', gold: 0 },
-    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, ...extra
+    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, hint: '', ...extra
   };
   db.tasks[t.id] = t; return t;
 }
@@ -453,6 +453,7 @@ Rules:
 - If a task is big/vague (rank A/S, or would take > 90 min, or has no subtasks and is multi-step), split it into 3-8 concrete subtasks in "splits", and assign only 1-2 of those subtasks as today's quests (use "subtask" with the exact subtask title).
 - You may add at most 1 small new task in "newTasks" (e.g. a short training or health quest) only if the list is thin.
 - XP guidance: E 10, D 20, C 40, B 70, A 120, S 200; subtask quests 10-40. Gold ≈ XP/2.
+- A task's "messageToSystem" is the hunter's instruction for THAT task: follow it when you split it into subtasks and when you decide whether to assign it today.
 - OBEY "standingOrders" — they are permanent rules from the hunter. Read "notesFromHunter" (what he wrote during recent days) and treat it as direct feedback to the coach: adjust the load, the schedule and the choice of tasks accordingly, and acknowledge it in one clause of the message.
 - "blockedRecently" lists quests he sent back because they were impossible. Do not re-assign a task that is still blocked for the same reason; prefer something he can actually move.
 - "recentFocusTimings" are real measured minutes. Use them to make your "minutes" estimates honest.
@@ -481,7 +482,7 @@ function plannerInput() {
     hunter: { name: S().name, level: p.level, rank: p.hunter, streak: p.streak, stats: p.stats },
     yesterday: yp ? planStatus(yp) : null, completionsLast7Days: last7,
     openTasks: liveTasks().filter(isActive).map(t => ({
-      id: t.id, title: t.title, notes: (t.notes || '').slice(0, 300), rank: t.rank, stat: t.stat, deadline: t.deadline || null,
+      id: t.id, title: t.title, notes: (t.notes || '').slice(0, 300), messageToSystem: t.hint || '', rank: t.rank, stat: t.stat, deadline: t.deadline || null,
       overdue: !!(t.deadline && t.deadline < d), pinnedToday: t.pinDay === d, origin: t.origin, repeat: t.repeat?.type !== 'none' ? repeatLabel(t.repeat) : null,
       subtasks: t.subtasks.map(s => ({ title: s.title, done: s.done }))
     }))
@@ -522,8 +523,8 @@ async function maybeAutoPlan() {
   if (canHaiku && (!Drive.configured() || Drive.ready())) { LS.set('ss_haiku_try', d); await generatePlanHaiku(); }
 }
 async function splitWithAI(t) {
-  const txt = await anthropic('Split the task into 3-8 concrete, ordered, actionable subtasks (each doable in under 60 minutes). Reply ONLY with JSON: {"subtasks":["..."],"rank":"E|D|C|B|A|S"}',
-    JSON.stringify({ title: t.title, notes: t.notes, deadline: t.deadline, existingSubtasks: t.subtasks.map(s => s.title) }), 800);
+  const txt = await anthropic('Split the task into 3-8 concrete, ordered, actionable subtasks (each doable in under 60 minutes). Follow "messageToSystem" if present — it is the owner\'s instruction for this task. Reply ONLY with JSON: {"subtasks":["..."],"rank":"E|D|C|B|A|S"}',
+    JSON.stringify({ title: t.title, notes: t.notes, messageToSystem: t.hint || '', deadline: t.deadline, existingSubtasks: t.subtasks.map(s => s.title) }), 800);
   return parseJSON(txt);
 }
 async function getApiKey() {
@@ -882,10 +883,12 @@ function taskRow(t) {
   if (db.plans[d]?.quests.some(q => q.taskId === t.id)) meta.push(`<span class="today">◈ quest</span>`);
   if (t.origin === 'penalty') meta.push(`<span class="over">penalty</span>`);
   meta.push(`<span>${t.stat}</span>`);
+  if (t.hint) meta.push(`<span class="hint-chip">💬 ${esc(t.hint)}</span>`);
   return `<div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
     ${rankBadge(t.rank)}
+    ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">💬</button>` : ''}
     ${!t.done ? `<button class="icon-btn ${t.pinDay === d ? 'on' : ''}" data-act="pin" data-id="${t.id}" title="Pin to today">★</button>` : ''}
     <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">✎</button></div>`;
 }
@@ -1065,7 +1068,9 @@ function renderEdit() {
   const t = editing, r = t.repeat;
   $('#modalBox').innerHTML = `<div class="sys-head"><span class="sys-icon">✎</span>EDIT QUEST<button class="icon-btn" style="margin-left:auto" data-m="close">✕</button></div><div class="sys-body">
     <label>Title</label><input id="eTitle" value="${esc(t.title)}">
-    <label>Notes</label><textarea id="eNotes">${esc(t.notes)}</textarea>
+    <label>Notes (for you)</label><textarea id="eNotes">${esc(t.notes)}</textarea>
+    <label>💬 Message to the System (read when it splits &amp; schedules this)</label>
+    <textarea id="eHint" rows="2" placeholder="e.g. split by chapters · only evenings · needs the lab PC · do the boring part first">${esc(t.hint || '')}</textarea>
     <div class="grid2"><div><label>Deadline</label><input id="eDeadline" type="date" value="${esc(t.deadline)}"></div>
     <div><label>Rank (difficulty)</label><select id="eRank">${RANKS.map(x => `<option ${x === t.rank ? 'selected' : ''} value="${x}">${x} · ${RANK_XP[x]} XP</option>`).join('')}</select></div></div>
     <label>Stat</label><select id="eStat">${Object.entries(STATS).map(([k, v]) => `<option value="${k}" ${k === t.stat ? 'selected' : ''}>${k} — ${v} (${STAT_HINT[k]})</option>`).join('')}</select>
@@ -1089,6 +1094,7 @@ function readEditFields() {
   t.title = $('#eTitle').value.trim() || t.title; t.notes = $('#eNotes').value; t.deadline = $('#eDeadline').value;
   t.rank = $('#eRank').value; t.stat = $('#eStat').value; t.reward = { text: $('#eReward').value.trim(), gold: +$('#eGold').value || 0 };
   if ($('#eDungeon')) t.dungeon = $('#eDungeon').checked;
+  if ($('#eHint')) t.hint = $('#eHint').value.trim().slice(0, 500);
   t.repeat.type = $('#eRepeat').value; if ($('#eEvery')) t.repeat.every = Math.max(1, +$('#eEvery').value || 1);
   $$('[data-m=subtxt]').forEach(el => { const s = t.subtasks[+el.dataset.i]; if (s) s.title = el.value; });
 }
@@ -1170,6 +1176,11 @@ document.addEventListener('click', async e => {
     case 'add': return addTask();
     case 'toggle': e.preventDefault(); return t.done ? uncompleteTask(t) : completeTask(t);
     case 'edit': return openEdit(id);
+    case 'hint': return askText({
+      title: 'Message to the System', label: `About "${t.title}" — read when it is split and scheduled`,
+      placeholder: 'e.g. split by chapters · evenings only · needs the lab PC · don\'t give me this before Friday',
+      value: t.hint || '', ok: 'Save'
+    }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
     case 'pin': t.pinDay = t.pinDay === today() ? '' : today(); touch(t); return save();
     case 'tgDone': ui.showDone = !ui.showDone; return render();
     case 'tgSched': ui.showSched = !ui.showSched; return render();

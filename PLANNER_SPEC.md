@@ -2,7 +2,7 @@
 
 ## Input: `My Drive/SoloSystem/system-db.json`
 - `settings`: `tz` (5), `resetHour` (4), `dailyMinutes`, `maxQuests`, `name`
-- `tasks`: map id → `{id, title, notes, done, deleted, deadline 'YYYY-MM-DD', rank E-S, stat STR|INT|AGI|VIT|PER, subtasks[{id,title,done}], repeat{type,every,days}, nextDay, pinDay, origin}`
+- `tasks`: map id → `{id, title, notes, hint (the hunter's own message to you about THAT task — obey it when splitting and scheduling it), done, deleted, deadline 'YYYY-MM-DD', rank E-S, stat STR|INT|AGI|VIT|PER, subtasks[{id,title,done}], repeat{type,every,days}, nextDay, pinDay, origin}`
   - A task is **open today** when `!deleted && !done && (!nextDay || nextDay <= today)`
 - `log`: map id → `{type: done|sub|bonus|buy, day, xp, gold, stat, taskId}`. Use it for streak and history.
 - `plans`: map date → the plans that have already been applied. A quest with `blocked: true` was pushed back by the hunter; `reason` says why, and it doesn't count for or against the day.
