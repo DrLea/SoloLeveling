@@ -191,3 +191,13 @@ code{background:rgba(63,169,255,.1);padding:1px 5px;border-radius:3px;font-size:
 .shadow{border:1px solid var(--line-soft);border-radius:4px;padding:6px 8px;font-size:12px;background:linear-gradient(180deg,rgba(63,169,255,.10),transparent);color:#b9d6f5;overflow:hidden}
 .shadow span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .shadow.B{border-color:rgba(176,124,255,.5)}.shadow.A{border-color:rgba(255,159,67,.5)}.shadow.S{border-color:rgba(255,77,109,.6);box-shadow:0 0 8px rgba(255,77,109,.25)}
+
+/* ---- v4: quest tools, blocked, notes, focus timer ---- */
+.qtools{display:flex;gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:120px}
+.qtools .icon-btn{padding:3px 6px;font-size:15px}
+.blocked-box{border:1px dashed var(--line-soft);border-radius:var(--r);padding:10px 12px;margin-top:12px;font-size:14px;color:var(--muted)}
+.blocked-box b{color:var(--text);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+.focus-live{color:var(--green)!important}
+.focus-live a{color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent)}
+#noteBox{min-height:74px}
+#noteSaved{font-size:12px;color:var(--green)}

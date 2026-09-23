@@ -65,10 +65,10 @@ const HUNTER_RANKS = [[1, 'E'], [10, 'D'], [20, 'C'], [35, 'B'], [50, 'A'], [70,
 // ---------- DB
 const DEFAULT_SETTINGS = {
   name: 'Hunter', tz: 5, resetHour: 4, dailyMinutes: 180, maxQuests: 6, fallbackHour: 6,
-  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', updatedAt: 0
+  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', updatedAt: 0
 };
 function emptyDB() {
-  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
 }
 let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
@@ -132,7 +132,7 @@ function mergeMaps(a = {}, b = {}) {
 function mergeDB(a, b) {
   if (!b) return a; if (!a) return b;
   const m = emptyDB();
-  for (const c of ['tasks', 'log', 'shop', 'plans']) m[c] = mergeMaps(a[c], b[c]);
+  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes']) m[c] = mergeMaps(a[c], b[c]);
   m.settings = { ...DEFAULT_SETTINGS, ...((b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings) };
   m.security = (b.security?.updatedAt || 0) > (a.security?.updatedAt || 0) ? b.security : a.security;
   return m;
@@ -284,9 +284,9 @@ function awaken() {
 // ---------- daily plan
 function planStatus(p) {
   if (!p) return { done: 0, total: 0 };
-  let done = 0;
-  for (const q of p.quests) if (questDone(q, p.date)) done++;
-  return { done, total: p.quests.length };
+  let done = 0, total = 0;
+  for (const q of p.quests) { if (q.blocked) continue; total++; if (questDone(q, p.date)) done++; }
+  return { done, total };
 }
 function questDone(q, date) {
   if (q.skipped) return true;
@@ -351,14 +351,18 @@ function applyPlan(p, source) {
   });
   return true;
 }
-function localPlan() {
-  const budget = S().dailyMinutes, max = S().maxQuests, d = today();
-  const cands = liveTasks().filter(isActive).map(t => {
+function scoreTasks() {
+  const d = today();
+  return liveTasks().filter(isActive).map(t => {
     let score = RANKS.indexOf(t.rank) * 2;
     if (t.deadline) { const days = (Date.parse(t.deadline) - Date.parse(d)) / 864e5; score += days < 0 ? 30 : days <= 1 ? 20 : days <= 3 ? 10 : days <= 7 ? 4 : 0; }
     if (t.pinDay === d) score += 50; if (t.origin === 'penalty') score += 60; if (t.repeat?.type !== 'none') score += 8;
     return { t, score };
   }).sort((a, b) => b.score - a.score);
+}
+function localPlan() {
+  const budget = S().dailyMinutes, max = S().maxQuests;
+  const cands = scoreTasks();
   let used = 0; const quests = [];
   for (const { t } of cands) {
     if (quests.length >= max) break;
@@ -372,6 +376,54 @@ function localPlan() {
     }
   }
   return { date: d, title: 'Daily Quest', message: 'The System has assigned your quests for today. Complete them before the day resets.', quests };
+}
+// ---------- quest control: block / reroll / quick add / focus timer
+function questTitle(q) { const t = db.tasks[q.taskId]; if (!t) return '?'; const s = q.subId && t.subtasks.find(x => x.id === q.subId); return s ? s.title : t.title; }
+function blockQuest(i, reason) {
+  const plan = db.plans[today()]; const q = plan?.quests[i]; if (!q) return;
+  q.blocked = true; q.reason = (reason || '').slice(0, 200); touch(plan);
+  const t = db.tasks[q.taskId]; if (t) { t.pinDay = ''; touch(t); } // stays in Tasks, just not today's quest
+  toast('Returned to Tasks — no penalty'); checkDailyClear(); save();
+}
+function unblockQuest(i) { const plan = db.plans[today()]; const q = plan?.quests[i]; if (!q) return; q.blocked = false; q.reason = ''; touch(plan); save(); }
+function rerollQuest(i) {
+  const plan = db.plans[today()]; const q = plan?.quests[i]; if (!q) return;
+  const used = new Set(plan.quests.map(x => x.taskId));
+  const next = scoreTasks().find(c => !used.has(c.t.id));
+  if (!next) return toast('No other task to swap in');
+  const t = next.t; const open = t.subtasks.filter(s => !s.done);
+  const sub = (t.rank === 'A' || t.rank === 'S') && open.length ? open[0] : null;
+  plan.quests[i] = { taskId: t.id, subId: sub ? sub.id : null, xp: sub ? 15 : RANK_XP[t.rank], gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2), minutes: sub ? 30 : RANK_MIN[t.rank], note: 'swapped in by you' };
+  touch(plan); sfx('tick'); save();
+}
+function addUrgentQuest(title) {
+  const t = newTask(title, { origin: 'urgent', pinDay: today() });
+  let plan = db.plans[today()];
+  if (!plan) { applyPlan({ date: today(), title: 'Daily Quest', message: '', quests: [] }, 'local'); plan = db.plans[today()]; }
+  plan.quests.push({ taskId: t.id, subId: null, xp: RANK_XP[t.rank], gold: Math.round(RANK_XP[t.rank] / 2), minutes: RANK_MIN[t.rank], note: 'added by you', added: true });
+  touch(plan); sfx('tick'); toast('Added to today'); save();
+}
+// focus timer (optional — completing a quest never needs it)
+const Timer = {
+  get() { return LS.get('ss_timer', null); },
+  start(taskId, subId) { LS.set('ss_timer', { taskId, subId: subId || null, start: now() }); render(); },
+  stop(discard) {
+    const t = this.get(); LS.del('ss_timer'); if (!t) return;
+    const mins = Math.round((now() - t.start) / 60e3);
+    if (!discard && mins >= 1) {
+      const task = db.tasks[t.taskId];
+      logAdd({ type: 'focus', taskId: t.taskId, subId: t.subId, minutes: mins, title: `Focus: ${task ? task.title : ''}` });
+      toast(`⏱ ${mins} min recorded`); save();
+    } else render();
+  },
+  elapsed() { const t = this.get(); return t ? Math.floor((now() - t.start) / 1000) : 0; }
+};
+function fmtSecs(s) { const m = Math.floor(s / 60); return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
+function note(date = today()) { return db.notes?.[date]?.text || ''; }
+function setNote(text, date = today()) {
+  if (!db.notes) db.notes = {};
+  db.notes[date] = touch({ date, text: text.slice(0, 4000) });
+  save({ noRender: true });
 }
 function runDaily() {
   // penalty for yesterday
@@ -401,7 +453,10 @@ Rules:
 - If a task is big/vague (rank A/S, or would take > 90 min, or has no subtasks and is multi-step), split it into 3-8 concrete subtasks in "splits", and assign only 1-2 of those subtasks as today's quests (use "subtask" with the exact subtask title).
 - You may add at most 1 small new task in "newTasks" (e.g. a short training or health quest) only if the list is thin.
 - XP guidance: E 10, D 20, C 40, B 70, A 120, S 200; subtask quests 10-40. Gold ≈ XP/2.
-- "message": 1-3 sentences in the System's voice, referencing the hunter's actual situation (streak, deadlines, yesterday's result). No cringe, no emojis.
+- OBEY "standingOrders" — they are permanent rules from the hunter. Read "notesFromHunter" (what he wrote during recent days) and treat it as direct feedback to the coach: adjust the load, the schedule and the choice of tasks accordingly, and acknowledge it in one clause of the message.
+- "blockedRecently" lists quests he sent back because they were impossible. Do not re-assign a task that is still blocked for the same reason; prefer something he can actually move.
+- "recentFocusTimings" are real measured minutes. Use them to make your "minutes" estimates honest.
+- "message": 1-3 sentences in the System's voice, referencing the hunter's actual situation (streak, deadlines, yesterday's result, his note). No cringe, no emojis.
 - "bonus": reward for clearing all quests; "penalty": a physical or disciplined task if quests are missed (be reasonable).
 Output schema:
 {"date":"YYYY-MM-DD","title":"Daily Quest: <short theme>","message":"...",
@@ -415,8 +470,14 @@ Output schema:
 function plannerInput() {
   const p = player(), d = today(), y = addDays(d, -1), yp = db.plans[y];
   const last7 = {}; for (let i = 7; i >= 1; i--) { const k = addDays(d, -i); last7[k] = p.byDay[k] || 0; }
+  const notes = {}; for (let i = 0; i <= 3; i++) { const k = addDays(d, -i); if (note(k)) notes[k] = note(k); }
+  const focus = Object.values(db.log).filter(e => !e.deleted && e.type === 'focus').slice(-15)
+    .map(e => ({ task: db.tasks[e.taskId]?.title || e.title, actualMinutes: e.minutes, day: e.day }));
+  const blocked = [];
+  for (const k of [d, y, addDays(d, -2), addDays(d, -3)]) for (const q of db.plans[k]?.quests || []) if (q.blocked) blocked.push({ day: k, task: questTitle(q), reason: q.reason || '' });
   return {
     today: d, weekday: DAYS[weekday(d)], dailyMinutes: S().dailyMinutes, maxQuests: S().maxQuests,
+    standingOrders: S().standing || '', notesFromHunter: notes, blockedRecently: blocked, recentFocusTimings: focus,
     hunter: { name: S().name, level: p.level, rank: p.hunter, streak: p.streak, stats: p.stats },
     yesterday: yp ? planStatus(yp) : null, completionsLast7Days: last7,
     openTasks: liveTasks().filter(isActive).map(t => ({
@@ -772,20 +833,38 @@ function viewQuests(p) {
       ${plan.message ? `<div class="sys-msg">${esc(plan.message)}</div>` : ''}
       <div class="section-title" style="margin-top:6px">GOALS <span>${st.done}/${st.total}</span></div>`;
     if (!plan.quests.length) h += `<div class="empty">No quests today. Rest is also training.</div>`;
+    const tm = Timer.get();
     for (const [i, q] of plan.quests.entries()) {
       const t = db.tasks[q.taskId]; if (!t) continue;
+      if (q.blocked) continue;
       const s = q.subId ? t.subtasks.find(x => x.id === q.subId) : null; const dn = questDone(q, d);
+      const running = tm && tm.taskId === q.taskId && (tm.subId || null) === (q.subId || null);
       h += `<div class="goal ${dn ? 'done' : ''}"><input type="checkbox" class="chk" data-act="quest" data-i="${i}" ${dn ? 'checked' : ''} ${q.skipped ? 'disabled' : ''}>
-        <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${q.note ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}</div>
-        ${!dn && p.inv.skip ? `<button class="icon-btn" data-act="skipQuest" data-i="${i}" title="Skip with a token">⏭</button>` : ''}
+        <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${q.note ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}
+          ${running ? `<small class="focus-live">⏱ <span id="focusT">${fmtSecs(Timer.elapsed())}</span> — <a href="#" data-act="timerStop" data-i="${i}">stop &amp; record</a></small>` : ''}</div>
+        ${!dn ? `<div class="qtools">
+          ${!running && !tm ? `<button class="icon-btn" data-act="timerStart" data-i="${i}" title="Start focus timer (optional)">▶</button>` : ''}
+          <button class="icon-btn" data-act="reroll" data-i="${i}" title="Swap for another task">⟳</button>
+          <button class="icon-btn" data-act="block" data-i="${i}" title="Blocked — send back to Tasks">⤺</button>
+          ${p.inv.skip ? `<button class="icon-btn" data-act="skipQuest" data-i="${i}" title="Skip with a token">⏭</button>` : ''}
+        </div>` : ''}
         <div class="reward-line">${rankBadge(t.rank)}<br>+${q.xp} XP<br><span class="muted">${q.minutes}m</span></div></div>`;
     }
+    const blocked = plan.quests.map((q, i) => ({ q, i })).filter(x => x.q.blocked);
+    if (blocked.length) h += `<div class="blocked-box"><b>Returned to Tasks</b>${blocked.map(({ q, i }) => `<div class="row" style="margin-top:4px"><span class="grow">⤺ ${esc(questTitle(q))}${q.reason ? ` <span class="muted">— ${esc(q.reason)}</span>` : ''}</span><button class="icon-btn" data-act="unblock" data-i="${i}" title="Put it back on today">↩</button></div>`).join('')}</div>`;
     h += `<div class="progress"><div style="width:${st.total ? st.done / st.total * 100 : 0}%"></div></div>`;
     if (plan.bonus?.text || plan.bonus?.xp) h += `<div class="bonus-box">${plan.bonusClaimed ? '✓ CLEARED — ' : 'CLEAR REWARD: '}+${plan.bonus.xp || 50} XP · +${plan.bonus.gold || 30} G${plan.bonus.text ? ' · ' + esc(plan.bonus.text) : ''}</div>`;
     if (!plan.bonusClaimed) h += `<div class="warn-box"><b>WARNING:</b> Failure to complete the daily quest will result in an appropriate penalty.<br><span class="muted">${esc(plan.penalty?.title || '')}</span></div>`;
     h += `<div class="timer" id="timer">⏱ ${countdown()}</div>`;
   }
+  h += `<div class="add-row" style="margin-top:14px"><input id="quickQuest" placeholder="Something urgent came up…" enterkeyhint="done" autocomplete="off"><button class="btn primary" data-act="addQuest">+</button></div>
+    <p class="muted" style="font-size:12px;margin:6px 0 0">Added here it becomes a quest for today and lands in Tasks.</p>`;
   h += `</div></div>`;
+  // note to the System
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">✎</span>NOTE TO THE SYSTEM</div><div class="sys-body">
+    <p class="muted" style="margin:0 0 8px;font-size:14px">Write anything the coach should know — it's read when the next plan is made. <span id="noteSaved" class="muted"></span></p>
+    <textarea id="noteBox" rows="3" placeholder="e.g. exam moved to Friday · sick today, go easy · the API task is blocked by the client">${esc(note())}</textarea>
+    ${S().standing ? `<p class="muted" style="font-size:13px;margin:8px 0 0">Standing orders: ${esc(S().standing)}</p>` : ''}</div></div>`;
   // penalty + pinned + overdue quick list
   const urgent = liveTasks().filter(t => isActive(t) && (t.origin === 'penalty' || (t.deadline && t.deadline <= d)) && !(plan?.quests || []).some(q => q.taskId === t.id));
   if (urgent.length) { h += `<div class="section-title">URGENT</div>` + urgent.map(taskRow).join(''); }
@@ -896,12 +975,20 @@ function viewLog(p) {
     const plan = db.plans[d];
     const entries = Object.values(db.log).filter(e => !e.deleted && e.day === d).sort((a, b) => a.at - b.at);
     h += `<div class="sys-window card"><div class="sys-head">${esc(fmtDay(d))} <span style="margin-left:auto;font-size:12px;color:var(--muted)">${d}</span></div><div class="sys-body">`;
-    if (plan) { const st = planStatus(plan); h += `<div class="sys-msg"><b>${esc(plan.title || 'Daily Quest')}</b> — ${st.done}/${st.total} cleared${plan.bonusClaimed ? ' ✓' : ''}<br><span class="muted">${esc(plan.message || '')}</span></div>`; }
+    if (plan) {
+      const st = planStatus(plan); const blocked = plan.quests.filter(q => q.blocked);
+      h += `<div class="sys-msg"><b>${esc(plan.title || 'Daily Quest')}</b> — ${st.done}/${st.total} cleared${plan.bonusClaimed ? ' ✓' : ''}<br><span class="muted">${esc(plan.message || '')}</span>
+        ${blocked.length ? `<br><span class="muted">⤺ blocked: ${blocked.map(q => esc(questTitle(q)) + (q.reason ? ` (${esc(q.reason)})` : '')).join(', ')}</span>` : ''}</div>`;
+    }
+    if (note(d)) h += `<div class="bonus-box" style="border-color:var(--line-soft);color:var(--text)"><b>Your note</b><br>${esc(note(d)).replace(/\n/g, '<br>')}</div>`;
+    const focusMin = Object.values(db.log).filter(e => !e.deleted && e.type === 'focus' && e.day === d).reduce((a, e) => a + (+e.minutes || 0), 0);
+    if (focusMin) h += `<p class="muted" style="font-size:14px;margin:10px 0 0">⏱ Focused time recorded: <b>${focusMin} min</b></p>`;
     if (!entries.length) h += `<div class="empty">Nothing recorded on this day.</div>`;
     if (entries.length > 60) h += `<p class="muted" style="font-size:13px">Showing the last 60 of ${entries.length} entries.</p>`;
     for (const e of entries.slice(-60)) {
-      const icon = { done: '✓', sub: '·', bonus: '★', buy: '🎁', item: '⚔', use: '⚗', awaken: '✦' }[e.type] || '•';
-      const right = e.type === 'buy' || e.type === 'item' ? `<span style="color:var(--gold)">-${e.cost} G</span>` : (e.xp ? `<span style="color:var(--accent)">+${e.xp} XP</span>` : '');
+      const icon = { done: '✓', sub: '·', bonus: '★', buy: '🎁', item: '⚔', use: '⚗', awaken: '✦', focus: '⏱' }[e.type] || '•';
+      const right = e.type === 'buy' || e.type === 'item' ? `<span style="color:var(--gold)">-${e.cost} G</span>`
+        : e.type === 'focus' ? `<span class="muted">${e.minutes} min</span>` : (e.xp ? `<span style="color:var(--accent)">+${e.xp} XP</span>` : '');
       h += `<div class="log-row"><span class="li">${icon}</span><span class="grow">${esc(e.title || ITEMS[e.key]?.name || e.type)}</span>${right}</div>`;
     }
     h += `</div></div>`;
@@ -937,6 +1024,8 @@ function viewSettings() {
     <div><label>Max quests / day</label><input id="setMax" type="number" min="1" max="15" value="${s.maxQuests}"></div></div>
     <div class="grid2"><div><label>Timezone (UTC+)</label><input id="setTz" type="number" step="0.5" value="${s.tz}"></div>
     <div><label>Day resets at (hour)</label><input id="setReset" type="number" min="0" max="12" value="${s.resetHour}"></div></div>
+    <label>Standing orders (every plan respects these)</label>
+    <textarea id="setStanding" rows="3" placeholder="e.g. I train in the mornings · no coding on Sundays · never more than 2 job applications a day">${esc(s.standing || '')}</textarea>
     <label class="row" style="text-transform:none;letter-spacing:0;font-size:15px;margin-top:14px"><input type="checkbox" id="setSound" ${s.sound ? 'checked' : ''}> System sounds</label>
     <button class="btn primary" style="margin-top:12px" data-act="saveSettings">Save</button></div></div>
 
@@ -1003,8 +1092,20 @@ function readEditFields() {
   t.repeat.type = $('#eRepeat').value; if ($('#eEvery')) t.repeat.every = Math.max(1, +$('#eEvery').value || 1);
   $$('[data-m=subtxt]').forEach(el => { const s = t.subtasks[+el.dataset.i]; if (s) s.title = el.value; });
 }
+let asking = null;
+function askText({ title, label, placeholder = '', value = '', ok = 'OK' }, cb) {
+  asking = cb; editing = null;
+  $('#modalBox').innerHTML = `<div class="sys-head"><span class="sys-icon">?</span>${esc(title)}<button class="icon-btn" style="margin-left:auto" data-ask="cancel">✕</button></div>
+    <div class="sys-body"><label>${esc(label)}</label><textarea id="askInput" rows="2" placeholder="${esc(placeholder)}">${esc(value)}</textarea>
+    <div class="row" style="margin-top:12px"><span class="grow"></span><button class="btn" data-ask="cancel">Cancel</button><button class="btn primary" data-ask="ok">${esc(ok)}</button></div></div>`;
+  $('#modal').classList.remove('hidden'); history.pushState({ tab, modal: 1 }, '');
+  setTimeout(() => $('#askInput')?.focus(), 60);
+}
 $('#modal').addEventListener('click', async e => {
+  const ab = e.target.closest('[data-ask]');
+  if (ab) { const v = $('#askInput')?.value || ''; const cb = asking; asking = null; closeModal(); if (ab.dataset.ask === 'ok' && cb) cb(v.trim()); return; }
   if (e.target.id === 'modal') return closeModal();
+  if (!editing) return;
   const b = e.target.closest('[data-m]'); if (!b) return;
   const m = b.dataset.m, i = +b.dataset.i;
   if (m === 'subtxt') return;
@@ -1036,15 +1137,24 @@ $('#modal').addEventListener('click', async e => {
 $('#modal').addEventListener('change', e => { if (e.target.id === 'eRepeat') { readEditFields(); renderEdit(); } });
 $('#modal').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'eNewSub') { e.preventDefault(); $('[data-m=subadd]').click(); } });
 function closeModal(fromBack) {
-  $('#modal').classList.add('hidden'); editing = null;
+  $('#modal').classList.add('hidden'); editing = null; asking = null;
   if (!fromBack && history.state?.modal) history.back();
 }
 function confirmInline(b, txt) { if (b.dataset.confirm) return true; b.dataset.confirm = 1; b.textContent = txt; setTimeout(() => { delete b.dataset.confirm; }, 3000); return false; }
 
 // ---------- EVENTS
+let noteT = null;
 function bind(v) {
   const nt = $('#newTask', v);
   if (nt) nt.onkeydown = e => { if (e.key === 'Enter') addTask(); };
+  const qq = $('#quickQuest', v);
+  if (qq) qq.onkeydown = e => { if (e.key === 'Enter') { const t = qq.value.trim(); if (t) { qq.value = ''; addUrgentQuest(t); } } };
+  const nb = $('#noteBox', v);
+  if (nb) nb.oninput = () => {
+    clearTimeout(noteT);
+    $('#noteSaved').textContent = '…';
+    noteT = setTimeout(() => { setNote(nb.value); const s = $('#noteSaved'); if (s) s.textContent = '✓ saved'; }, 600);
+  };
 }
 function addTask() {
   const el = $('#newTask'); const v = el.value.trim(); if (!v) return;
@@ -1070,6 +1180,19 @@ document.addEventListener('click', async e => {
       else if (questDone(q, today())) uncompleteTask(qt); else completeTask(qt);
       return;
     }
+    case 'addQuest': {
+      const el = $('#quickQuest'); const v = el.value.trim(); if (!v) return;
+      el.value = ''; return addUrgentQuest(v);
+    }
+    case 'block': {
+      const i = +b.dataset.i;
+      return askText({ title: 'Blocked quest', label: 'Why can\'t it be done today? (optional — Claude reads this)', placeholder: 'waiting for the client / library is broken / no access', ok: 'Send back to Tasks' },
+        reason => blockQuest(i, reason));
+    }
+    case 'unblock': return unblockQuest(+b.dataset.i);
+    case 'reroll': if (!confirmInline(b, '⟳?')) return; return rerollQuest(+b.dataset.i);
+    case 'timerStart': { const q = db.plans[today()].quests[+b.dataset.i]; return Timer.start(q.taskId, q.subId); }
+    case 'timerStop': e.preventDefault(); return Timer.stop(false);
     case 'genHaiku': case 'regen': if (a === 'regen' && !confirmInline(b, 'Tap again to confirm')) return; return generatePlanHaiku(a === 'regen');
     case 'genLocal': case 'genLocalForce': if (a === 'genLocalForce') delete db.plans[today()]; applyPlan(localPlan(), 'local'); sfx('level'); return save();
     case 'sync': if (!Drive.ready()) { try { await Drive.connect(''); } catch (err) { return toast(err.message); } } return sync();
@@ -1101,7 +1224,7 @@ document.addEventListener('click', async e => {
     case 'buy': { const it = db.shop[id]; if (player().gold < it.cost) return; if (!confirmInline(b, 'Confirm?')) return; logAdd({ type: 'buy', title: it.title, cost: it.cost, itemId: it.id }); sfx('done'); popup({ title: 'Item Purchased', text: esc(it.title), reward: `-${it.cost} G · Enjoy it. You earned it.` }); return save(); }
     case 'saveSettings': {
       const s = S();
-      if ($('#setName')) { s.name = $('#setName').value.trim() || 'Hunter'; s.dailyMinutes = Math.max(15, +$('#setMin').value || 180); s.maxQuests = clamp(+$('#setMax').value || 6, 1, 15); s.tz = +$('#setTz').value; s.resetHour = clamp(+$('#setReset').value, 0, 12); s.sound = $('#setSound').checked; }
+      if ($('#setName')) { s.name = $('#setName').value.trim() || 'Hunter'; s.dailyMinutes = Math.max(15, +$('#setMin').value || 180); s.maxQuests = clamp(+$('#setMax').value || 6, 1, 15); s.tz = +$('#setTz').value; s.resetHour = clamp(+$('#setReset').value, 0, 12); s.sound = $('#setSound').checked; s.standing = $('#setStanding').value.trim().slice(0, 1000); }
       if ($('#setModel')) { s.model = $('#setModel').value.trim() || 'claude-haiku-4-5'; s.fallbackHour = clamp(+$('#setFb').value, 0, 27); s.autoHaiku = $('#setAuto').checked; }
       touch(s); toast('Saved'); return save();
     }
@@ -1129,7 +1252,10 @@ document.addEventListener('click', async e => {
     case 'lock': return lockNow();
   }
 });
-setInterval(() => { const t = $('#timer'); if (t) t.textContent = '⏱ ' + countdown(); }, 1000);
+setInterval(() => {
+  const t = $('#timer'); if (t) t.textContent = '⏱ ' + countdown();
+  const f = $('#focusT'); if (f) f.textContent = fmtSecs(Timer.elapsed());
+}, 1000);
 // day rollover + periodic sync
 let lastDay = null;
 setInterval(() => { if (!cryptoKey) return; const d = today(); if (lastDay && d !== lastDay) { runDaily(); render(); maybeAutoPlan(); } lastDay = d; }, 30e3);
