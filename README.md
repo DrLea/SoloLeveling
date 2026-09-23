@@ -60,6 +60,14 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Android back button** steps back through tabs and closes dialogs instead of closing the app.
 - **Sync:** changes save locally at once and go to Drive about a second later. The Google token lasts an hour, so the app renews it in the background, retries when you tap the screen, and syncs when you open, leave or close the app. Nothing is lost while offline — the sync badge shows "saved here" and it uploads on the next connection.
 
+## v4 additions
+- **⤺ Blocked:** push a quest back to Tasks when it can't be done through no fault of yours. Type a reason, the goal count shrinks (3/4 → 3/3), no penalty, and Claude reads the reason the next morning and doesn't hand you the same wall again.
+- **Quick add on the Quests screen:** type an urgent task and it becomes a quest for today as well as a normal task.
+- **⟳ Reroll:** swap a quest for the next best task from your list. Instant, no AI request.
+- **▶ Focus timer (optional):** start it if you want the real minutes measured. Ticking a quest done never needs it, and the measured times teach Claude how long things actually take you.
+- **Note to the System:** a note you edit through the day on the Quests screen. Claude reads the last 3 days of notes when planning and adjusts. Each day's note is kept and shown in Record.
+- **Standing orders** (System tab): permanent rules every plan must respect.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 
