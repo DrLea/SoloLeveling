@@ -664,7 +664,7 @@ async function sync(opts = {}) {
     syncErr = e.message; syncFails++; console.warn(e);
     if (syncFails < 6) scheduleSync(Math.min(60e3, 3e3 * syncFails)); // keep retrying quietly, nothing is lost
   }
-  finally { syncing = false; render(); }
+  finally { syncing = false; renderSoft(); }
   if (syncQueued) { syncQueued = false; scheduleSync(800); }
   maybeAutoPlan();
 }
@@ -792,6 +792,40 @@ function enterApp() {
 function lockNow() { cryptoKey = null; apiKeyCache = null; IDB.del('key'); db = emptyDB(); $('#app').classList.add('hidden'); $('#lock').classList.remove('hidden'); renderLock(); }
 
 // ---------- RENDER
+// A background refresh (sync, timers) must never rebuild the screen while a field is focused —
+// that is what threw the cursor to the start and ate the last characters typed.
+let renderPending = false, renderTimer = null;
+function typingNow() {
+  const a = document.activeElement;
+  return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.type !== 'checkbox');
+}
+function renderSoft() {
+  if (!cryptoKey) return;
+  if (typingNow()) {
+    renderPending = true; clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => { if (renderPending && !typingNow()) { renderPending = false; render(); } }, 3000);
+    renderSync(); return;             // the little sync badge is outside #view, safe to update
+  }
+  renderPending = false; render();
+}
+document.addEventListener('focusout', e => {
+  if ((e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') && renderPending) {
+    renderPending = false; setTimeout(() => { if (!typingNow()) render(); }, 50);
+  }
+});
+function snapField() {
+  const a = document.activeElement;
+  if (!a || !a.id || (a.tagName !== 'INPUT' && a.tagName !== 'TEXTAREA')) return null;
+  return { id: a.id, start: a.selectionStart, end: a.selectionEnd, value: a.value, scroll: a.scrollTop };
+}
+function restoreField(s) {
+  if (!s) return;
+  const el = document.getElementById(s.id); if (!el) return;
+  if (el.value !== s.value) el.value = s.value;      // never lose what was typed
+  el.focus({ preventScroll: true });
+  try { el.setSelectionRange(s.start, s.end); } catch { }
+  el.scrollTop = s.scroll;
+}
 function render() {
   if (!cryptoKey) return;
   const p = player();
@@ -800,10 +834,10 @@ function render() {
   $$('.bottomnav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   const v = $('#view');
   const fn = { quests: viewQuests, tasks: viewTasks, status: viewStatus, log: viewLog, shop: viewShop, settings: viewSettings }[tab] || viewQuests;
-  const focusId = document.activeElement?.id, val = document.activeElement?.value;
+  const snap = snapField();
   v.innerHTML = fn(p);
   bind(v);
-  if (focusId && $('#' + focusId)) { const el = $('#' + focusId); el.focus(); if (val != null && el.value === '') el.value = val; }
+  restoreField(snap);
 }
 function renderSync() {
   const b = $('#syncBtn'); if (!b) return;
@@ -1156,11 +1190,16 @@ function bind(v) {
   const qq = $('#quickQuest', v);
   if (qq) qq.onkeydown = e => { if (e.key === 'Enter') { const t = qq.value.trim(); if (t) { qq.value = ''; addUrgentQuest(t); } } };
   const nb = $('#noteBox', v);
-  if (nb) nb.oninput = () => {
-    clearTimeout(noteT);
-    $('#noteSaved').textContent = '…';
-    noteT = setTimeout(() => { setNote(nb.value); const s = $('#noteSaved'); if (s) s.textContent = '✓ saved'; }, 600);
-  };
+  if (nb) {
+    const autogrow = () => { nb.style.height = 'auto'; nb.style.height = Math.min(320, nb.scrollHeight + 4) + 'px'; };
+    autogrow();
+    nb.oninput = () => {
+      setNote(nb.value);          // straight into the database on every keystroke — nothing can be lost
+      autogrow();
+      const s = $('#noteSaved'); if (s) s.textContent = '✓ saved';
+      clearTimeout(noteT); noteT = setTimeout(() => { const s2 = $('#noteSaved'); if (s2) s2.textContent = ''; }, 1500);
+    };
+  }
 }
 function addTask() {
   const el = $('#newTask'); const v = el.value.trim(); if (!v) return;
@@ -1269,11 +1308,11 @@ setInterval(() => {
 }, 1000);
 // day rollover + periodic sync
 let lastDay = null;
-setInterval(() => { if (!cryptoKey) return; const d = today(); if (lastDay && d !== lastDay) { runDaily(); render(); maybeAutoPlan(); } lastDay = d; }, 30e3);
+setInterval(() => { if (!cryptoKey) return; const d = today(); if (lastDay && d !== lastDay) { runDaily(); renderSoft(); maybeAutoPlan(); } lastDay = d; }, 30e3);
 setInterval(() => { if (cryptoKey && Drive.configured()) sync(); }, 3 * 60e3);
 document.addEventListener('visibilitychange', () => {
   if (!cryptoKey) return;
-  if (document.visibilityState === 'visible') { runDaily(); render(); Drive.scheduleRefresh(); sync(); }
+  if (document.visibilityState === 'visible') { runDaily(); renderSoft(); Drive.scheduleRefresh(); sync(); }
   else flushSync();
 });
 window.addEventListener('pagehide', flushSync);
