@@ -977,7 +977,7 @@ function taskRow(t) {
   const d = today(); const subDone = t.subtasks.filter(s => s.done).length;
   const meta = [];
   if (t.deadline) meta.push(`<span class="${t.deadline < d && !t.done ? 'over' : ''}">⌛ ${esc(fmtDay(t.deadline))}</span>`);
-  if (t.subtasks.length) meta.push(`<span>☰ ${subDone}/${t.subtasks.length}</span>`);
+
   if (t.repeat?.type !== 'none') meta.push(`<span>${esc(repeatLabel(t.repeat))}</span>`);
   if (t.nextDay && t.nextDay > d) meta.push(`<span>next ${esc(fmtDay(t.nextDay))}</span>`);
   if (t.reward?.text) meta.push(`<span>🎁 ${esc(t.reward.text)}</span>`);
@@ -990,7 +990,7 @@ function taskRow(t) {
   return `<div class="task-wrap ${open ? 'open' : ''}"><div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
-    ${t.subtasks.length ? `<button class="icon-btn caret ${open ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}" title="Steps">${open ? '\u25be' : '\u25b8'}</button>` : ''}
+    ${t.subtasks.length ? `<button class="steps-btn ${open ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}" title="Steps">${t.subtasks.filter(x => x.done).length}/${t.subtasks.length} <i>${open ? '\u25be' : '\u25b8'}</i></button>` : ''}
     ${rankBadge(t.rank)}
     ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
     ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
@@ -1005,8 +1005,8 @@ function dungeonCard(t) {
       <div class="muted" style="font-size:13px">${done}/${t.subtasks.length} cleared${t.deadline ? ' · ⌛ ' + esc(fmtDay(t.deadline)) : ''}</div></div>
       <button class="icon-btn" data-act="edit" data-id="${t.id}">✎</button></div>
     <div class="progress"><div style="width:${pct}%"></div></div>
-    ${subList(t)}
-    <div class="row" style="margin-top:8px"><span class="muted" style="font-size:13px">${ICON.dungeon} Dungeon — medal on clear</span><span class="grow"></span>
+    ${ui.openTasks.has(t.id) ? subList(t) : ''}
+    <div class="row" style="margin-top:8px"><button class="steps-btn ${ui.openTasks.has(t.id) ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}">${done}/${t.subtasks.length} steps <i>${ui.openTasks.has(t.id) ? '\u25be' : '\u25b8'}</i></button><span class="muted" style="font-size:13px">${ICON.dungeon} medal on clear</span><span class="grow"></span>
     ${done >= t.subtasks.length && t.subtasks.length ? `<button class="btn small primary" data-act="toggle" data-id="${t.id}">Claim medal</button>` : ''}</div></div>`;
 }
 function viewTasks() {
@@ -1402,7 +1402,7 @@ document.addEventListener('pointerdown', () => {
 // ---------- Android back button: go one step back instead of closing the app
 function go(t) {
   if (t === tab) { render(); window.scrollTo(0, 0); return; }   // tapping the current tab just refreshes it
-  tab = t; LS.set('ss_tab', t); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
+  tab = t; LS.set('ss_tab', t); ui.openTasks.clear(); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
 }
 window.addEventListener('popstate', e => {
   if (!$('#modal').classList.contains('hidden')) { closeModal(true); return; }
