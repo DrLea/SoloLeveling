@@ -36,6 +36,18 @@ const STAT_WORDS = {
   PER: ['call', 'meet', 'apply', 'job', 'interview', 'linkedin', 'email', 'network', 'friend', 'family', 'cv', 'resume']
 };
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+// thin line icons, same visual language as the window frames
+const ICON = {
+  msg: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 5.5h16v11H10l-4.5 3.5V16.5H4z"/></svg>',
+  add: '<svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="8.2"/><path d="M12 8.2v7.6M8.2 12h7.6"/></svg>',
+  added: '<svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="8.2"/><path d="M8.4 12.2l2.6 2.6 4.6-5.2"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 20.5h4L19.2 9.3l-4-4L4 16.5z"/><path d="M14.4 5.6l4 4"/></svg>',
+  dungeon: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 4l10 10M20 4L10 14"/><path d="M3.5 17.5l3 3M20.5 17.5l-3 3M12 14l2.5 2.5M12 14L9.5 16.5"/></svg>',
+  play: '<svg viewBox="0 0 24 24" class="ic"><path d="M8 5.5l10 6.5-10 6.5z"/></svg>',
+  reroll: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6"/><path d="M17.5 3.5v3.2h-3.2M6.5 20.5v-3.2h3.2"/></svg>',
+  back: '<svg viewBox="0 0 24 24" class="ic"><path d="M9 6.5L4.5 11 9 15.5"/><path d="M4.5 11h10a5 5 0 0 1 5 5v2"/></svg>',
+  skip: '<svg viewBox="0 0 24 24" class="ic"><path d="M5 6l8 6-8 6z"/><path d="M18 6v12"/></svg>'
+};
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const AWAKEN_LEVEL = 30, AWAKEN_BONUS = 0.10;
 const ITEMS = {
@@ -396,10 +408,34 @@ function rerollQuest(i) {
   plan.quests[i] = { taskId: t.id, subId: sub ? sub.id : null, xp: sub ? 15 : RANK_XP[t.rank], gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2), minutes: sub ? 30 : RANK_MIN[t.rank], note: 'swapped in by you' };
   touch(plan); sfx('tick'); save();
 }
+function inQuests(taskId, date = today()) {
+  return (db.plans[date]?.quests || []).some(q => q.taskId === taskId && !q.blocked);
+}
+function ensurePlan() {
+  if (!db.plans[today()]) applyPlan({ date: today(), title: 'Daily Quest', message: '', quests: [] }, 'local');
+  return db.plans[today()];
+}
+// one button on a task row: put it into today's quests, or take it back out
+function toggleToday(t) {
+  const plan = ensurePlan();
+  const i = plan.quests.findIndex(q => q.taskId === t.id && !q.blocked);
+  if (i >= 0) {
+    if (questDone(plan.quests[i], today())) return toast('Already completed today');
+    plan.quests.splice(i, 1); t.pinDay = ''; touch(t); touch(plan);
+    toast('Removed from today'); checkDailyClear(); return save();
+  }
+  const open = t.subtasks.filter(s => !s.done);
+  const sub = (t.rank === 'A' || t.rank === 'S') && open.length ? open[0] : null;
+  plan.quests.push({
+    taskId: t.id, subId: sub ? sub.id : null, xp: sub ? 15 : RANK_XP[t.rank],
+    gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2), minutes: sub ? 30 : RANK_MIN[t.rank], note: 'chosen by you', added: true
+  });
+  t.pinDay = today(); touch(t); touch(plan);
+  sfx('tick'); toast('Added to today\'s quests'); save();
+}
 function addUrgentQuest(title) {
   const t = newTask(title, { origin: 'urgent', pinDay: today() });
-  let plan = db.plans[today()];
-  if (!plan) { applyPlan({ date: today(), title: 'Daily Quest', message: '', quests: [] }, 'local'); plan = db.plans[today()]; }
+  const plan = ensurePlan();
   plan.quests.push({ taskId: t.id, subId: null, xp: RANK_XP[t.rank], gold: Math.round(RANK_XP[t.rank] / 2), minutes: RANK_MIN[t.rank], note: 'added by you', added: true });
   touch(plan); sfx('tick'); toast('Added to today'); save();
 }
@@ -426,17 +462,22 @@ function setNote(text, date = today()) {
   save({ noRender: true });
 }
 function runDaily() {
-  // penalty for yesterday
+  // Penalty for yesterday — issued only once across all devices:
+  // the task carries a fixed id derived from the date, and with Drive on we wait for the
+  // first successful sync so a phone opened on stale data can't invent a second one.
   const y = addDays(today(), -1), yp = db.plans[y];
-  if (yp && !yp.penaltyApplied && yp.quests.length) {
+  const canJudge = !Drive.configured() || syncedOnce;
+  if (yp && !yp.penaltyApplied && yp.quests.length && canJudge) {
     const st = planStatus(yp);
+    const penId = 'pen-' + y;
     yp.penaltyApplied = true; touch(yp);
-    if (st.done < st.total && player().inv.shield > 0) {
-      logAdd({ type: 'use', key: 'shield', forDay: y, title: 'Streak Shield' });
+    const shieldUsed = Object.values(db.log).some(e => !e.deleted && e.type === 'use' && e.key === 'shield' && (e.forDay || e.day) === y);
+    if (st.done < st.total && !shieldUsed && player().inv.shield > 0) {
+      logAdd({ id: 'shield-' + y, type: 'use', key: 'shield', forDay: y, title: 'Streak Shield' });
       setTimeout(() => { sfx('level'); popup({ title: 'Streak Shield Used', text: `Yesterday's daily quest was not cleared (${st.done}/${st.total}).<br>The shield absorbed the penalty.`, reward: 'Streak preserved.' }); }, 600);
-    } else if (st.done < st.total) {
+    } else if (st.done < st.total && !shieldUsed && !db.tasks[penId]) {
       const pen = yp.penalty || {};
-      newTask(pen.title || 'Penalty Quest: survive', { origin: 'penalty', rank: RANKS.includes(pen.rank) ? pen.rank : 'C', stat: STATS[pen.stat] ? pen.stat : 'STR', deadline: today(), pinDay: today() });
+      newTask(pen.title || 'Penalty Quest: survive', { id: penId, origin: 'penalty', rank: RANKS.includes(pen.rank) ? pen.rank : 'C', stat: STATS[pen.stat] ? pen.stat : 'STR', deadline: today(), pinDay: today() });
       setTimeout(() => { sfx('fail'); popup({ cls: 'fail', title: 'Penalty Zone', text: `Yesterday's daily quest was not completed (${st.done}/${st.total}).<br>A penalty quest has been issued.`, reward: esc(pen.title || '') }); }, 600);
     }
     save({ noRender: true });
@@ -630,7 +671,7 @@ const Drive = {
   }
 };
 
-let syncing = false, syncTimer = null, lastSync = LS.get('ss_last_sync', 0), syncErr = '', syncFails = 0, syncQueued = false;
+let syncing = false, syncTimer = null, lastSync = LS.get('ss_last_sync', 0), syncErr = '', syncFails = 0, syncQueued = false, syncedOnce = false;
 function dirty() { return LS.get('ss_dirty', false); }
 function scheduleSync(ms) { clearTimeout(syncTimer); if (Drive.configured()) syncTimer = setTimeout(() => sync(), ms); }
 async function sync(opts = {}) {
@@ -658,7 +699,7 @@ async function sync(opts = {}) {
     const out = stableDB(db);
     if (out !== remoteStr) Drive.fileId = await Drive.upsert(DBFILE, out, file ? file.id : null);
     LS.set('ss_fileid', Drive.fileId);
-    LS.set('ss_dirty', false); lastSync = now(); LS.set('ss_last_sync', lastSync); syncErr = ''; syncFails = 0;
+    LS.set('ss_dirty', false); lastSync = now(); LS.set('ss_last_sync', lastSync); syncErr = ''; syncFails = 0; syncedOnce = true;
     persistLocal();
   } catch (e) {
     syncErr = e.message; syncFails++; console.warn(e);
@@ -666,6 +707,7 @@ async function sync(opts = {}) {
   }
   finally { syncing = false; renderSoft(); }
   if (syncQueued) { syncQueued = false; scheduleSync(800); }
+  if (syncedOnce) runDaily();
   maybeAutoPlan();
 }
 // last-chance flush when the app is closed or backgrounded
@@ -878,15 +920,15 @@ function viewQuests(p) {
         <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${q.note ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}
           ${running ? `<small class="focus-live">⏱ <span id="focusT">${fmtSecs(Timer.elapsed())}</span> — <a href="#" data-act="timerStop" data-i="${i}">stop &amp; record</a></small>` : ''}</div>
         ${!dn ? `<div class="qtools">
-          ${!running && !tm ? `<button class="icon-btn" data-act="timerStart" data-i="${i}" title="Start focus timer (optional)">▶</button>` : ''}
-          <button class="icon-btn" data-act="reroll" data-i="${i}" title="Swap for another task">⟳</button>
-          <button class="icon-btn" data-act="block" data-i="${i}" title="Blocked — send back to Tasks">⤺</button>
-          ${p.inv.skip ? `<button class="icon-btn" data-act="skipQuest" data-i="${i}" title="Skip with a token">⏭</button>` : ''}
+          ${!running && !tm ? `<button class="icon-btn" data-act="timerStart" data-i="${i}" title="Start focus timer (optional)">${ICON.play}</button>` : ''}
+          <button class="icon-btn" data-act="reroll" data-i="${i}" title="Swap for another task">${ICON.reroll}</button>
+          <button class="icon-btn" data-act="block" data-i="${i}" title="Blocked — send back to Tasks">${ICON.back}</button>
+          ${p.inv.skip ? `<button class="icon-btn" data-act="skipQuest" data-i="${i}" title="Skip with a token">${ICON.skip}</button>` : ''}
         </div>` : ''}
         <div class="reward-line">${rankBadge(t.rank)}<br>+${q.xp} XP<br><span class="muted">${q.minutes}m</span></div></div>`;
     }
     const blocked = plan.quests.map((q, i) => ({ q, i })).filter(x => x.q.blocked);
-    if (blocked.length) h += `<div class="blocked-box"><b>Returned to Tasks</b>${blocked.map(({ q, i }) => `<div class="row" style="margin-top:4px"><span class="grow">⤺ ${esc(questTitle(q))}${q.reason ? ` <span class="muted">— ${esc(q.reason)}</span>` : ''}</span><button class="icon-btn" data-act="unblock" data-i="${i}" title="Put it back on today">↩</button></div>`).join('')}</div>`;
+    if (blocked.length) h += `<div class="blocked-box"><b>Returned to Tasks</b>${blocked.map(({ q, i }) => `<div class="row" style="margin-top:4px"><span class="grow">${ICON.back} ${esc(questTitle(q))}${q.reason ? ` <span class="muted">— ${esc(q.reason)}</span>` : ''}</span><button class="icon-btn" data-act="unblock" data-i="${i}" title="Put it back on today">↩</button></div>`).join('')}</div>`;
     h += `<div class="progress"><div style="width:${st.total ? st.done / st.total * 100 : 0}%"></div></div>`;
     if (plan.bonus?.text || plan.bonus?.xp) h += `<div class="bonus-box">${plan.bonusClaimed ? '✓ CLEARED — ' : 'CLEAR REWARD: '}+${plan.bonus.xp || 50} XP · +${plan.bonus.gold || 30} G${plan.bonus.text ? ' · ' + esc(plan.bonus.text) : ''}</div>`;
     if (!plan.bonusClaimed) h += `<div class="warn-box"><b>WARNING:</b> Failure to complete the daily quest will result in an appropriate penalty.<br><span class="muted">${esc(plan.penalty?.title || '')}</span></div>`;
@@ -917,14 +959,15 @@ function taskRow(t) {
   if (db.plans[d]?.quests.some(q => q.taskId === t.id)) meta.push(`<span class="today">◈ quest</span>`);
   if (t.origin === 'penalty') meta.push(`<span class="over">penalty</span>`);
   meta.push(`<span>${t.stat}</span>`);
-  if (t.hint) meta.push(`<span class="hint-chip">💬 ${esc(t.hint)}</span>`);
+  if (t.hint) meta.push(`<span class="hint-chip">${ICON.msg} ${esc(t.hint)}</span>`);
+  const inToday = inQuests(t.id);
   return `<div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
     ${rankBadge(t.rank)}
-    ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">💬</button>` : ''}
-    ${!t.done ? `<button class="icon-btn ${t.pinDay === d ? 'on' : ''}" data-act="pin" data-id="${t.id}" title="Pin to today">★</button>` : ''}
-    <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">✎</button></div>`;
+    ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
+    ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : 'Add to today\'s quests'}">${inToday ? ICON.added : ICON.add}</button>` : ''}
+    <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>`;
 }
 function dungeonCard(t) {
   const done = t.subtasks.filter(s => s.done).length, total = t.subtasks.length || 1;
@@ -934,7 +977,7 @@ function dungeonCard(t) {
       <div class="muted" style="font-size:13px">${done}/${t.subtasks.length} cleared${t.deadline ? ' · ⌛ ' + esc(fmtDay(t.deadline)) : ''}</div></div>
       <button class="icon-btn" data-act="edit" data-id="${t.id}">✎</button></div>
     <div class="progress"><div style="width:${pct}%"></div></div>
-    <div class="row" style="margin-top:8px"><span class="muted" style="font-size:13px">⚔ Dungeon — medal on clear</span><span class="grow"></span>
+    <div class="row" style="margin-top:8px"><span class="muted" style="font-size:13px">${ICON.dungeon} Dungeon — medal on clear</span><span class="grow"></span>
     ${done >= t.subtasks.length && t.subtasks.length ? `<button class="btn small primary" data-act="toggle" data-id="${t.id}">Claim medal</button>` : ''}</div></div>`;
 }
 function viewTasks() {
@@ -1103,12 +1146,14 @@ function renderEdit() {
   $('#modalBox').innerHTML = `<div class="sys-head"><span class="sys-icon">✎</span>EDIT QUEST<button class="icon-btn" style="margin-left:auto" data-m="close">✕</button></div><div class="sys-body">
     <label>Title</label><input id="eTitle" value="${esc(t.title)}">
     <label>Notes (for you)</label><textarea id="eNotes">${esc(t.notes)}</textarea>
-    <label>💬 Message to the System (read when it splits &amp; schedules this)</label>
+    <label>${ICON.msg} Message to the System (read when it splits &amp; schedules this)</label>
     <textarea id="eHint" rows="2" placeholder="e.g. split by chapters · only evenings · needs the lab PC · do the boring part first">${esc(t.hint || '')}</textarea>
     <div class="grid2"><div><label>Deadline</label><input id="eDeadline" type="date" value="${esc(t.deadline)}"></div>
     <div><label>Rank (difficulty)</label><select id="eRank">${RANKS.map(x => `<option ${x === t.rank ? 'selected' : ''} value="${x}">${x} · ${RANK_XP[x]} XP</option>`).join('')}</select></div></div>
     <label>Stat</label><select id="eStat">${Object.entries(STATS).map(([k, v]) => `<option value="${k}" ${k === t.stat ? 'selected' : ''}>${k} — ${v} (${STAT_HINT[k]})</option>`).join('')}</select>
-    <label class="row" style="text-transform:none;letter-spacing:0;font-size:15px"><input type="checkbox" id="eDungeon" ${t.dungeon ? 'checked' : ''}> ⚔ Dungeon — track it as a project and get a medal when it's cleared</label>
+    <label>Type</label>
+    <div class="chips"><button class="chip ${t.dungeon ? 'on' : ''}" data-m="dungeonToggle">${ICON.dungeon}Dungeon</button>
+      <span class="muted" style="font-size:13px">a project with a progress bar and a medal when cleared</span></div>
 
     <label>Subtasks</label>
     <div id="eSubs">${t.subtasks.map((s, i) => `<div class="sub-row"><input type="checkbox" class="chk" data-m="subchk" data-i="${i}" ${s.done ? 'checked' : ''}><input type="text" data-m="subtxt" data-i="${i}" value="${esc(s.title)}" class="grow"><button class="icon-btn" data-m="subdel" data-i="${i}">✕</button></div>`).join('')}</div>
@@ -1127,7 +1172,6 @@ function readEditFields() {
   const t = editing; if (!$('#eTitle')) return;
   t.title = $('#eTitle').value.trim() || t.title; t.notes = $('#eNotes').value; t.deadline = $('#eDeadline').value;
   t.rank = $('#eRank').value; t.stat = $('#eStat').value; t.reward = { text: $('#eReward').value.trim(), gold: +$('#eGold').value || 0 };
-  if ($('#eDungeon')) t.dungeon = $('#eDungeon').checked;
   if ($('#eHint')) t.hint = $('#eHint').value.trim().slice(0, 500);
   t.repeat.type = $('#eRepeat').value; if ($('#eEvery')) t.repeat.every = Math.max(1, +$('#eEvery').value || 1);
   $$('[data-m=subtxt]').forEach(el => { const s = t.subtasks[+el.dataset.i]; if (s) s.title = el.value; });
@@ -1156,6 +1200,7 @@ $('#modal').addEventListener('click', async e => {
   if (m === 'subdel') { t.subtasks.splice(i, 1); return renderEdit(); }
   if (m === 'subchk') { t.subtasks[i].done = b.checked; return; }
   if (m === 'day') { const ds = new Set(t.repeat.days || []); ds.has(i) ? ds.delete(i) : ds.add(i); t.repeat.days = [...ds].sort(); return renderEdit(); }
+  if (m === 'dungeonToggle') { t.dungeon = !t.dungeon; return renderEdit(); }
   if (m === 'aisplit') {
     b.innerHTML = '<span class="spin">◌</span>'; b.disabled = true;
     try { const res = await splitWithAI(t); for (const s of res.subtasks || []) if (!t.subtasks.some(x => norm(x.title) === norm(s))) t.subtasks.push({ id: uid(), title: String(s), done: false }); if (RANKS.includes(res.rank)) t.rank = res.rank; renderEdit(); }
@@ -1220,7 +1265,7 @@ document.addEventListener('click', async e => {
       placeholder: 'e.g. split by chapters · evenings only · needs the lab PC · don\'t give me this before Friday',
       value: t.hint || '', ok: 'Save'
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
-    case 'pin': t.pinDay = t.pinDay === today() ? '' : today(); touch(t); return save();
+    case 'toToday': return toggleToday(t);
     case 'tgDone': ui.showDone = !ui.showDone; return render();
     case 'tgSched': ui.showSched = !ui.showSched; return render();
     case 'quest': {
@@ -1324,7 +1369,10 @@ document.addEventListener('pointerdown', () => {
 }, true);
 
 // ---------- Android back button: go one step back instead of closing the app
-function go(t) { if (t === tab) return; tab = t; LS.set('ss_tab', t); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0); }
+function go(t) {
+  if (t === tab) { render(); window.scrollTo(0, 0); return; }   // tapping the current tab just refreshes it
+  tab = t; LS.set('ss_tab', t); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
+}
 window.addEventListener('popstate', e => {
   if (!$('#modal').classList.contains('hidden')) { closeModal(true); return; }
   const st = e.state || {};
