@@ -236,3 +236,6 @@ label .ic{width:15px;height:15px;opacity:.85}
 .steps-btn:hover{border-color:var(--accent);color:var(--text)}
 .steps-btn.on{border-color:var(--accent);color:var(--accent);background:rgba(47,140,255,.12)}
 .dungeon .steps-btn{margin-right:8px}
+.focus-live a{margin:0 1px}
+.focus-live.paused{color:var(--gold)!important}
+.focus-live a.drop{color:var(--muted);border-bottom-color:var(--muted)}

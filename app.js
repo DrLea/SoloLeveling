@@ -453,20 +453,24 @@ function addUrgentQuest(title) {
   plan.quests.push({ taskId: t.id, subId: null, xp: RANK_XP[t.rank], gold: Math.round(RANK_XP[t.rank] / 2), minutes: RANK_MIN[t.rank], note: 'added by you', added: true });
   touch(plan); sfx('tick'); toast('Added to today'); save();
 }
-// focus timer (optional — completing a quest never needs it)
+// focus timer (optional — completing a quest never needs it). Pausable; survives app restarts.
 const Timer = {
   get() { return LS.get('ss_timer', null); },
-  start(taskId, subId) { LS.set('ss_timer', { taskId, subId: subId || null, start: now() }); render(); },
+  set(t) { t ? LS.set('ss_timer', t) : LS.del('ss_timer'); },
+  start(taskId, subId) { this.set({ taskId, subId: subId || null, start: now(), acc: 0, paused: false }); render(); },
+  pause() { const t = this.get(); if (!t || t.paused) return; t.acc = (t.acc || 0) + (now() - t.start); t.paused = true; this.set(t); toast('⏸ paused'); render(); },
+  resume() { const t = this.get(); if (!t || !t.paused) return; t.start = now(); t.paused = false; this.set(t); render(); },
   stop(discard) {
-    const t = this.get(); LS.del('ss_timer'); if (!t) return;
-    const mins = Math.round((now() - t.start) / 60e3);
+    const t = this.get(); const ms = this.elapsedMs(); this.set(null); if (!t) return;
+    const mins = Math.round(ms / 60e3);
     if (!discard && mins >= 1) {
       const task = db.tasks[t.taskId];
       logAdd({ type: 'focus', taskId: t.taskId, subId: t.subId, minutes: mins, title: `Focus: ${task ? task.title : ''}` });
       toast(`⏱ ${mins} min recorded`); save();
-    } else render();
+    } else { if (discard) toast('timer discarded'); render(); }
   },
-  elapsed() { const t = this.get(); return t ? Math.floor((now() - t.start) / 1000) : 0; }
+  elapsedMs() { const t = this.get(); if (!t) return 0; return (t.acc || 0) + (t.paused ? 0 : now() - t.start); },
+  elapsed() { return Math.floor(this.elapsedMs() / 1000); }
 };
 function fmtSecs(s) { const m = Math.floor(s / 60); return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
 function note(date = today()) { return db.notes?.[date]?.text || ''; }
@@ -932,7 +936,10 @@ function viewQuests(p) {
       const running = tm && tm.taskId === q.taskId && (tm.subId || null) === (q.subId || null);
       h += `<div class="goal ${dn ? 'done' : ''}"><input type="checkbox" class="chk" data-act="quest" data-i="${i}" ${dn ? 'checked' : ''} ${q.skipped ? 'disabled' : ''}>
         <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${q.note ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}
-          ${running ? `<small class="focus-live">⏱ <span id="focusT">${fmtSecs(Timer.elapsed())}</span> — <a href="#" data-act="timerStop" data-i="${i}">stop &amp; record</a></small>` : ''}</div>
+          ${running ? `<small class="focus-live ${tm.paused ? 'paused' : ''}">⏱ <span id="focusT">${fmtSecs(Timer.elapsed())}</span>${tm.paused ? ' (paused)' : ''}
+            <a href="#" data-act="${tm.paused ? 'timerResume' : 'timerPause'}" data-i="${i}">${tm.paused ? 'resume' : 'pause'}</a> ·
+            <a href="#" data-act="timerStop" data-i="${i}">stop &amp; record</a> ·
+            <a href="#" data-act="timerDiscard" data-i="${i}" class="drop">discard</a></small>` : ''}</div>
         ${!dn ? `<div class="qtools">
           ${!running && !tm ? `<button class="icon-btn" data-act="timerStart" data-i="${i}" title="Start focus timer (optional)">${ICON.play}</button>` : ''}
           <button class="icon-btn" data-act="reroll" data-i="${i}" title="Swap for another task">${ICON.reroll}</button>
@@ -1319,6 +1326,9 @@ document.addEventListener('click', async e => {
     case 'reroll': if (!confirmInline(b, '⟳?')) return; return rerollQuest(+b.dataset.i);
     case 'timerStart': { const q = db.plans[today()].quests[+b.dataset.i]; return Timer.start(q.taskId, q.subId); }
     case 'timerStop': e.preventDefault(); return Timer.stop(false);
+    case 'timerPause': e.preventDefault(); return Timer.pause();
+    case 'timerResume': e.preventDefault(); return Timer.resume();
+    case 'timerDiscard': e.preventDefault(); if (!confirmInline(b, 'discard?')) return; return Timer.stop(true);
     case 'genHaiku': case 'regen': if (a === 'regen' && !confirmInline(b, 'Tap again to confirm')) return; return generatePlanHaiku(a === 'regen');
     case 'genLocal': case 'genLocalForce': if (a === 'genLocalForce') delete db.plans[today()]; applyPlan(localPlan(), 'local'); sfx('level'); return save();
     case 'sync': if (!Drive.ready()) { try { await Drive.connect(''); } catch (err) { return toast(err.message); } } return sync();
@@ -1380,7 +1390,7 @@ document.addEventListener('click', async e => {
 });
 setInterval(() => {
   const t = $('#timer'); if (t) t.textContent = '⏱ ' + countdown();
-  const f = $('#focusT'); if (f) f.textContent = fmtSecs(Timer.elapsed());
+  const f = $('#focusT'); if (f && !Timer.get()?.paused) f.textContent = fmtSecs(Timer.elapsed());
 }, 1000);
 // day rollover + periodic sync
 let lastDay = null;
