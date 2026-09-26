@@ -69,6 +69,12 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Standing orders** (System tab): permanent rules every plan must respect.
 - **💬 Message to the System per task:** the 💬 button on a task row (or the field in its edit screen) holds a note about that one task — how to split it, when it can be scheduled, what it needs. Claude reads it when it splits and assigns that task.
 
+## v7-v8
+- The star is gone. **⊕** on a task puts it into today's quests right away (⊘ tap again to take it out). If the task has unfinished steps it assigns the **next step**, not the whole task.
+- **Steps in the task list:** the ▸ arrow opens a task's subtasks. Each one has its own checkbox and its own ⊕, so you can assign exactly the step you want — several from one task if you like. Auto-pick and reroll follow the same rule.
+- **The penalty is issued once.** The penalty task has a fixed id per date, and with Drive on the app waits for the first sync before judging yesterday, so phone and desktop can't both create one.
+- Emoji replaced by thin line icons; the dungeon checkbox is now a ⚔ DUNGEON chip.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 

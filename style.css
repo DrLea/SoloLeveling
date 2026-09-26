@@ -216,3 +216,16 @@ label .ic{width:15px;height:15px;opacity:.85}
 .chip:hover{border-color:var(--accent);color:var(--text)}
 .chip.on{border-color:var(--accent);color:#eaf5ff;background:rgba(47,140,255,.16);box-shadow:0 0 10px rgba(63,169,255,.35)}
 .blocked-box .ic{width:15px;height:15px;opacity:.8}
+
+/* ---- v8: subtasks in the task list ---- */
+.task-wrap{margin:8px 0;border:1px solid var(--line-soft);border-radius:var(--r);background:rgba(8,16,36,.6)}
+.task-wrap .task{margin:0;border:0;background:none}
+.task-wrap.open{border-color:var(--accent);box-shadow:0 0 10px rgba(63,169,255,.18)}
+.caret{font-size:14px}
+.subs{border-top:1px dashed var(--line-soft);padding:4px 12px 8px 44px}
+.sub{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:15px}
+.sub + .sub{border-top:1px dashed rgba(63,169,255,.14)}
+.sub.done > span{text-decoration:line-through;color:var(--muted)}
+.chk.small{width:19px;height:19px;min-width:19px;border-radius:3px}
+.chk.small:checked:after{font-size:13px}
+.dungeon .subs{padding:4px 0 0;border-top:0}

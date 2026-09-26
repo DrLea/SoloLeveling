@@ -86,7 +86,7 @@ let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
 let apiKeyCache = null;         // decrypted Anthropic key (memory only)
 let tab = LS.get('ss_tab', 'quests');
-let ui = { showDone: false, showSched: false };
+let ui = { showDone: false, showSched: false, openTasks: new Set() };
 
 function S() { return db.settings; }
 function touch(o) { o.updatedAt = now(); return o; }
@@ -379,9 +379,10 @@ function localPlan() {
   for (const { t } of cands) {
     if (quests.length >= max) break;
     const open = t.subtasks.filter(s => !s.done);
-    if ((t.rank === 'A' || t.rank === 'S') && open.length) {
-      const s = open[0]; const m = 30; if (used + m > budget && quests.length) continue; used += m;
-      quests.push({ taskId: t.id, subtask: s.title, xp: 15, gold: 8, minutes: m });
+    if (open.length) {
+      const s = open[0]; const m = Math.max(15, Math.round(RANK_MIN[t.rank] / Math.max(2, t.subtasks.length)));
+      if (used + m > budget && quests.length) continue; used += m;
+      quests.push({ taskId: t.id, subtask: s.title, xp: Math.max(8, Math.round(RANK_XP[t.rank] / Math.max(2, t.subtasks.length))), gold: 8, minutes: m });
     } else {
       const m = RANK_MIN[t.rank]; if (used + m > budget && quests.length) continue; used += m;
       quests.push({ taskId: t.id, minutes: m });
@@ -404,34 +405,47 @@ function rerollQuest(i) {
   const next = scoreTasks().find(c => !used.has(c.t.id));
   if (!next) return toast('No other task to swap in');
   const t = next.t; const open = t.subtasks.filter(s => !s.done);
-  const sub = (t.rank === 'A' || t.rank === 'S') && open.length ? open[0] : null;
+  const sub = open.length ? open[0] : null;
   plan.quests[i] = { taskId: t.id, subId: sub ? sub.id : null, xp: sub ? 15 : RANK_XP[t.rank], gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2), minutes: sub ? 30 : RANK_MIN[t.rank], note: 'swapped in by you' };
   touch(plan); sfx('tick'); save();
 }
-function inQuests(taskId, date = today()) {
-  return (db.plans[date]?.quests || []).some(q => q.taskId === taskId && !q.blocked);
+function inQuests(taskId, subId = null, date = today()) {
+  return (db.plans[date]?.quests || []).some(q => q.taskId === taskId && (q.subId || null) === (subId || null) && !q.blocked);
+}
+function questIndex(taskId, subId = null, date = today()) {
+  return (db.plans[date]?.quests || []).findIndex(q => q.taskId === taskId && (q.subId || null) === (subId || null) && !q.blocked);
 }
 function ensurePlan() {
   if (!db.plans[today()]) applyPlan({ date: today(), title: 'Daily Quest', message: '', quests: [] }, 'local');
   return db.plans[today()];
 }
-// one button on a task row: put it into today's quests, or take it back out
-function toggleToday(t) {
+// one button: put a task (or one subtask) into today's quests, or take it back out
+function toggleToday(t, subId) {
   const plan = ensurePlan();
-  const i = plan.quests.findIndex(q => q.taskId === t.id && !q.blocked);
+  // a task with unfinished subtasks is assigned one step at a time, not as a whole
+  if (!subId) {
+    const open = t.subtasks.filter(s => !s.done && !inQuests(t.id, s.id));
+    if (open.length && questIndex(t.id, null) < 0) subId = open[0].id;
+  }
+  const i = questIndex(t.id, subId || null);
   if (i >= 0) {
-    if (questDone(plan.quests[i], today())) return toast('Already completed today');
-    plan.quests.splice(i, 1); t.pinDay = ''; touch(t); touch(plan);
+    const q = plan.quests[i];
+    if (questDone(q, today())) return toast('Already completed today');
+    plan.quests.splice(i, 1); touch(plan);
+    if (!inQuests(t.id, null) && !t.subtasks.some(s => inQuests(t.id, s.id))) { t.pinDay = ''; touch(t); }
     toast('Removed from today'); checkDailyClear(); return save();
   }
-  const open = t.subtasks.filter(s => !s.done);
-  const sub = (t.rank === 'A' || t.rank === 'S') && open.length ? open[0] : null;
+  const sub = subId ? t.subtasks.find(s => s.id === subId) : null;
+  if (sub && sub.done) return toast('That step is already done');
   plan.quests.push({
-    taskId: t.id, subId: sub ? sub.id : null, xp: sub ? 15 : RANK_XP[t.rank],
-    gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2), minutes: sub ? 30 : RANK_MIN[t.rank], note: 'chosen by you', added: true
+    taskId: t.id, subId: sub ? sub.id : null,
+    xp: sub ? Math.max(8, Math.round(RANK_XP[t.rank] / Math.max(2, t.subtasks.length))) : RANK_XP[t.rank],
+    gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2),
+    minutes: sub ? Math.max(15, Math.round(RANK_MIN[t.rank] / Math.max(2, t.subtasks.length))) : RANK_MIN[t.rank],
+    note: 'chosen by you', added: true
   });
   t.pinDay = today(); touch(t); touch(plan);
-  sfx('tick'); toast('Added to today\'s quests'); save();
+  sfx('tick'); toast(sub ? 'Step added to today' : 'Added to today\'s quests'); save();
 }
 function addUrgentQuest(title) {
   const t = newTask(title, { origin: 'urgent', pinDay: today() });
@@ -948,6 +962,17 @@ function viewQuests(p) {
   if (plan) h += `<div class="row" style="justify-content:center;margin-top:10px">${db.security?.apiKey ? `<button class="btn small ghost" data-act="regen">↻ Re-plan with Haiku (1 request)</button>` : `<button class="btn small ghost" data-act="genLocalForce">↻ Re-pick (no AI)</button>`}</div>`;
   return h;
 }
+function subList(t) {
+  if (!t.subtasks.length) return '';
+  return `<div class="subs">${t.subtasks.map(sub => {
+    const on = inQuests(t.id, sub.id);
+    return `<div class="sub ${sub.done ? 'done' : ''}">
+      <input type="checkbox" class="chk small" data-act="subToggle" data-id="${t.id}" data-sub="${sub.id}" ${sub.done ? 'checked' : ''}>
+      <span class="grow">${esc(sub.title)}</span>
+      ${!sub.done ? `<button class="icon-btn ${on ? 'on' : ''}" data-act="toToday" data-id="${t.id}" data-sub="${sub.id}" title="${on ? 'Remove this step from today' : 'Add this step to today'}">${on ? ICON.added : ICON.add}</button>` : ''}
+    </div>`;
+  }).join('')}</div>`;
+}
 function taskRow(t) {
   const d = today(); const subDone = t.subtasks.filter(s => s.done).length;
   const meta = [];
@@ -960,14 +985,17 @@ function taskRow(t) {
   if (t.origin === 'penalty') meta.push(`<span class="over">penalty</span>`);
   meta.push(`<span>${t.stat}</span>`);
   if (t.hint) meta.push(`<span class="hint-chip">${ICON.msg} ${esc(t.hint)}</span>`);
-  const inToday = inQuests(t.id);
-  return `<div class="task ${t.done ? 'done' : ''}">
+  const inToday = inQuests(t.id) || t.subtasks.some(x => inQuests(t.id, x.id));
+  const open = ui.openTasks.has(t.id);
+  return `<div class="task-wrap ${open ? 'open' : ''}"><div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
+    ${t.subtasks.length ? `<button class="icon-btn caret ${open ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}" title="Steps">${open ? '\u25be' : '\u25b8'}</button>` : ''}
     ${rankBadge(t.rank)}
     ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
-    ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : 'Add to today\'s quests'}">${inToday ? ICON.added : ICON.add}</button>` : ''}
-    <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>`;
+    ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
+    <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>
+    ${open ? subList(t) : ''}</div>`;
 }
 function dungeonCard(t) {
   const done = t.subtasks.filter(s => s.done).length, total = t.subtasks.length || 1;
@@ -977,6 +1005,7 @@ function dungeonCard(t) {
       <div class="muted" style="font-size:13px">${done}/${t.subtasks.length} cleared${t.deadline ? ' · ⌛ ' + esc(fmtDay(t.deadline)) : ''}</div></div>
       <button class="icon-btn" data-act="edit" data-id="${t.id}">✎</button></div>
     <div class="progress"><div style="width:${pct}%"></div></div>
+    ${subList(t)}
     <div class="row" style="margin-top:8px"><span class="muted" style="font-size:13px">${ICON.dungeon} Dungeon — medal on clear</span><span class="grow"></span>
     ${done >= t.subtasks.length && t.subtasks.length ? `<button class="btn small primary" data-act="toggle" data-id="${t.id}">Claim medal</button>` : ''}</div></div>`;
 }
@@ -1265,7 +1294,9 @@ document.addEventListener('click', async e => {
       placeholder: 'e.g. split by chapters · evenings only · needs the lab PC · don\'t give me this before Friday',
       value: t.hint || '', ok: 'Save'
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
-    case 'toToday': return toggleToday(t);
+    case 'toToday': return toggleToday(t, b.dataset.sub || null);
+    case 'tgOpen': ui.openTasks.has(id) ? ui.openTasks.delete(id) : ui.openTasks.add(id); return render();
+    case 'subToggle': { e.preventDefault(); const sub = t.subtasks.find(x => x.id === b.dataset.sub); if (sub) toggleSub(t, sub); return; }
     case 'tgDone': ui.showDone = !ui.showDone; return render();
     case 'tgSched': ui.showSched = !ui.showSched; return render();
     case 'quest': {
