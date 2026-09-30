@@ -239,3 +239,14 @@ label .ic{width:15px;height:15px;opacity:.85}
 .focus-live a{margin:0 1px}
 .focus-live.paused{color:var(--gold)!important}
 .focus-live a.drop{color:var(--muted);border-bottom-color:var(--muted)}
+
+/* ---- v11: rest days, weekly review, summoning ---- */
+.rest-badge{border:1px solid var(--green);color:var(--green);border-radius:10px;padding:1px 8px;font-size:11px;letter-spacing:.12em}
+.rev-list{font-size:14px;margin:10px 0}
+.rev-list b{display:block;font-family:Orbitron;font-size:11px;letter-spacing:.18em;color:var(--muted);margin-bottom:4px}
+.rev-list div{color:var(--green)}
+.rev-list.slip div{color:#ffb3c1}
+.side{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px dashed var(--line-soft)}
+.side:last-child{border-bottom:0}
+.side.on{opacity:.65}
+.arise-box{border:1px solid rgba(176,124,255,.4);background:rgba(176,124,255,.06);border-radius:var(--r);padding:12px;margin:10px 0}

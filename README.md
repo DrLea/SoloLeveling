@@ -75,6 +75,12 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **The penalty is issued once.** The penalty task has a fixed id per date, and with Drive on the app waits for the first sync before judging yesterday, so phone and desktop can't both create one.
 - Emoji replaced by thin line icons; the dungeon checkbox is now a ⚔ DUNGEON chip.
 
+## v11
+- **Rest days** (System tab, pick the weekdays): only repeating habits, anything due within 2 days and accepted side quests. No penalty, and the streak holds even on an empty day.
+- **Weekly review**, written by Claude on Friday evening: what was cleared, what slipped, the focus for next week, plus 3-4 **side quests for living** (volleyball, a hike, something with friends). Accept the ones you want and they become tasks due by the end of the weekend, each paying gold.
+- **Shadows are spendable.** Every cleared task is a shadow; now you can call them: Double EXP (10), Extraction for 200 gold (15), Shadow Shield (25). Spending lowers the army, so it is a real choice.
+- Medals stay a permanent record and unlock the Dungeon Conqueror title.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 

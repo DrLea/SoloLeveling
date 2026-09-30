@@ -50,6 +50,11 @@ const ICON = {
 };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const AWAKEN_LEVEL = 30, AWAKEN_BONUS = 0.10;
+const SUMMONS = {
+  xp2: { name: 'Double EXP', cost: 10, desc: 'The next quest you clear gives double EXP' },
+  gold: { name: 'Extraction', cost: 15, desc: 'The shadows bring back 200 gold' },
+  shield: { name: 'Shadow Shield', cost: 25, desc: 'A shield that absorbs one failed daily quest' }
+};
 const ITEMS = {
   skip: { name: 'Skip Token', icon: '⏭', cost: 120, desc: 'Drop one of today\'s quests without a penalty' },
   shield: { name: 'Streak Shield', icon: '⛨', cost: 200, desc: 'Absorbs one failed daily quest — no penalty, streak kept' },
@@ -77,10 +82,10 @@ const HUNTER_RANKS = [[1, 'E'], [10, 'D'], [20, 'C'], [35, 'B'], [50, 'A'], [70,
 // ---------- DB
 const DEFAULT_SETTINGS = {
   name: 'Hunter', tz: 5, resetHour: 4, dailyMinutes: 180, maxQuests: 6, fallbackHour: 6,
-  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', updatedAt: 0
+  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], updatedAt: 0
 };
 function emptyDB() {
-  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
 }
 let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
@@ -100,6 +105,7 @@ function addMonths(key, n) { const d = new Date(key + 'T00:00:00Z'); d.setUTCMon
 function weekday(key) { return new Date(key + 'T00:00:00Z').getUTCDay(); }
 function fmtDay(key) { if (!key) return ''; const t = today(); if (key === t) return 'today'; if (key === addDays(t, 1)) return 'tomorrow'; if (key === addDays(t, -1)) return 'yesterday'; const d = new Date(key + 'T00:00:00Z'); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' }); }
 const today = () => dayKey();
+function isRestDay(d = today()) { return (S().restDays || []).includes(weekday(d)); }
 
 // ---------- crypto
 async function deriveKey(pw, saltB64) {
@@ -144,7 +150,7 @@ function mergeMaps(a = {}, b = {}) {
 function mergeDB(a, b) {
   if (!b) return a; if (!a) return b;
   const m = emptyDB();
-  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes']) m[c] = mergeMaps(a[c], b[c]);
+  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews']) m[c] = mergeMaps(a[c], b[c]);
   m.settings = { ...DEFAULT_SETTINGS, ...((b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings) };
   m.security = (b.security?.updatedAt || 0) > (a.security?.updatedAt || 0) ? b.security : a.security;
   return m;
@@ -200,6 +206,7 @@ function completeTask(t) {
   const xp = Math.round(base * before.xpMult);
   const gold = Math.round((q?.gold ?? Math.round(base / 2)) * (before.potionActive ? 1 : 1)) + (+t.reward?.gold || 0);
   logAdd({ type: 'done', taskId: t.id, title: t.title, xp, gold, stat: t.stat, rank: t.rank, origin: t.origin, dungeon: !!t.dungeon });
+  if (before.buffXp2) consumeBuff();
   if (t.repeat?.type && t.repeat.type !== 'none') {
     t.nextDay = nextOccurrence(t); t.subtasks.forEach(s => s.done = false); t.lastDone = today();
   } else { t.done = true; t.doneAt = now(); }
@@ -243,6 +250,7 @@ function afterProgress(before) {
 function levelFrom(xp) { let l = 1, need = 100, rest = xp; while (rest >= need) { rest -= need; l++; need = 100 + (l - 1) * 40; } return { level: l, cur: rest, need }; }
 function player() {
   let rawXp = 0, spentXp = 0, awakenings = 0, goldEarned = 0, goldSpent = 0, doneCount = 0, sClears = 0, penaltyClears = 0, dailyClears = 0;
+  let shadowsSpent = 0, buffXp2 = false;
   const statXp = { STR: 0, INT: 0, AGI: 0, VIT: 0, PER: 0 };
   const byDay = {}, xpByDay = {}, medals = [], shadows = [], inv = { skip: 0, shield: 0, potion: 0 }, shieldDays = new Set();
   let potionDay = '';
@@ -268,13 +276,14 @@ function player() {
       if (e.key === 'potion') potionDay = e.day;
     }
     if (e.type === 'awaken') { awakenings++; spentXp += +e.xpSpent || 0; }
+    if (e.type === 'arise') { shadowsSpent += +e.shadows || 0; if (e.kind === 'xp2' && !e.used) buffXp2 = true; }
   }
   const xp = Math.max(0, rawXp - spentXp);
   const lv = levelFrom(xp);
   const stats = {}; for (const k in statXp) stats[k] = 10 + Math.floor(statXp[k] / 25);
   let hunter = 'E'; for (const [l, r] of HUNTER_RANKS) if (lv.level >= l) hunter = r;
   // streak: consecutive days with ≥1 completion (a shielded day counts), ending today or yesterday
-  const alive = d => byDay[d] || shieldDays.has(d);
+  const alive = d => byDay[d] || shieldDays.has(d) || isRestDay(d);   // rest days never break the streak
   let streak = 0, d = today(); if (!alive(d)) d = addDays(d, -1);
   while (alive(d)) { streak++; d = addDays(d, -1); }
   const days = [...new Set([...Object.keys(byDay), ...shieldDays])].sort(); let best = 0, run = 0, prev = null;
@@ -282,8 +291,25 @@ function player() {
   return {
     xp, totalXp: rawXp, ...lv, gold: goldEarned - goldSpent, goldEarned, stats, hunter, streak, bestStreak: best,
     doneCount, sClears, penaltyClears, dailyClears, byDay, xpByDay, awakenings, medals, shadows, inv, shieldDays,
-    potionActive: potionDay === today(), xpMult: (1 + AWAKEN_BONUS * awakenings) * (potionDay === today() ? 2 : 1)
+    shadowsSpent, shadowsLeft: Math.max(0, doneCount - shadowsSpent), buffXp2,
+    potionActive: potionDay === today(),
+    xpMult: (1 + AWAKEN_BONUS * awakenings) * (potionDay === today() ? 2 : 1) * (buffXp2 ? 2 : 1)
   };
+}
+function summon(kind) {
+  const it = SUMMONS[kind]; const p = player();
+  if (!it || p.shadowsLeft < it.cost) return toast('Not enough shadows');
+  logAdd({ type: 'arise', kind, shadows: it.cost, title: `Arise: ${it.name}` });
+  if (kind === 'gold') logAdd({ type: 'done', title: 'Shadow extraction', xp: 0, gold: 200, stat: null, rank: 'E', origin: 'arise' });
+  if (kind === 'shield') logAdd({ type: 'item', key: 'shield', cost: 0, title: 'Shadow Shield (summoned)' });
+  sfx('level');
+  popup({ cls: 'levelup', title: 'ARISE', text: `${it.cost} shadows answer the call.`, reward: esc(it.desc) });
+  save();
+}
+// the Double EXP buff is spent by the next completed quest
+function consumeBuff() {
+  const e = Object.values(db.log).filter(x => !x.deleted && x.type === 'arise' && x.kind === 'xp2' && !x.used).sort((a, b) => a.at - b.at)[0];
+  if (e) { e.used = true; touch(e); }
 }
 function awaken() {
   const p = player(); if (p.level < AWAKEN_LEVEL) return;
@@ -373,8 +399,11 @@ function scoreTasks() {
   }).sort((a, b) => b.score - a.score);
 }
 function localPlan() {
-  const budget = S().dailyMinutes, max = S().maxQuests;
-  const cands = scoreTasks();
+  const rest = isRestDay();
+  const budget = rest ? Math.min(45, S().dailyMinutes) : S().dailyMinutes;
+  const max = rest ? 3 : S().maxQuests;
+  let cands = scoreTasks();
+  if (rest) cands = cands.filter(({ t }) => t.repeat?.type !== 'none' || t.origin === 'penalty' || t.origin === 'side' || (t.deadline && t.deadline <= addDays(today(), 2)));
   let used = 0; const quests = [];
   for (const { t } of cands) {
     if (quests.length >= max) break;
@@ -388,7 +417,11 @@ function localPlan() {
       quests.push({ taskId: t.id, minutes: m });
     }
   }
-  return { date: d, title: 'Daily Quest', message: 'The System has assigned your quests for today. Complete them before the day resets.', quests };
+  return {
+    date: today(), title: rest ? 'Rest Day' : 'Daily Quest',
+    message: rest ? 'A rest day. Only what repeats and what burns — the rest of the day is yours.' : 'The System has assigned your quests for today. Complete them before the day resets.',
+    quests
+  };
 }
 // ---------- quest control: block / reroll / quick add / focus timer
 function questTitle(q) { const t = db.tasks[q.taskId]; if (!t) return '?'; const s = q.subId && t.subtasks.find(x => x.id === q.subId); return s ? s.title : t.title; }
@@ -479,13 +512,48 @@ function setNote(text, date = today()) {
   db.notes[date] = touch({ date, text: text.slice(0, 4000) });
   save({ noRender: true });
 }
+function applyReview(r) {
+  if (!r || !r.date) return false;
+  if (!db.reviews) db.reviews = {};
+  if (db.reviews[r.date]) return false;
+  db.reviews[r.date] = touch({
+    date: r.date, weekOf: r.weekOf || '', summary: r.summary || '', wins: r.wins || [], slips: r.slips || [],
+    focus: r.focus || '', sideQuests: (r.sideQuests || []).map((q, i) => ({
+      ref: q.ref || 's' + i, title: q.title || '', why: q.why || '', rank: RANKS.includes(q.rank) ? q.rank : 'D',
+      stat: STATS[q.stat] ? q.stat : 'VIT', gold: clamp(+q.gold || 60, 0, 400), minutes: +q.minutes || 60,
+      accepted: false, taskId: ''
+    })), seen: false
+  });
+  return true;
+}
+function acceptSideQuest(date, ref) {
+  const r = db.reviews[date]; const sq = r?.sideQuests.find(x => x.ref === ref); if (!sq) return;
+  if (sq.accepted && db.tasks[sq.taskId]) { // un-accept: drop the task again
+    const t = db.tasks[sq.taskId]; t.deleted = true; touch(t);
+    sq.accepted = false; sq.taskId = ''; touch(r); toast('Dropped'); return save();
+  }
+  // due at the end of the coming rest block (so a Sunday plan isn't overdue on Saturday)
+  let due = addDays(today(), 2), first = -1;
+  for (let i = 0; i <= 7; i++) if (isRestDay(addDays(today(), i))) { first = i; break; }
+  if (first >= 0) { let j = first; while (j < first + 7 && isRestDay(addDays(today(), j + 1))) j++; due = addDays(today(), j); }
+  const t = newTask(sq.title, { origin: 'side', rank: sq.rank, stat: sq.stat, deadline: due, notes: sq.why, reward: { text: 'for living, not only grinding', gold: sq.gold } });
+  sq.accepted = true; sq.taskId = t.id; touch(r);
+  sfx('tick'); toast('Side quest accepted'); save();
+}
+function latestReview() {
+  const keys = Object.keys(db.reviews || {}).sort();
+  const k = keys[keys.length - 1];
+  if (!k) return null;
+  return (k >= addDays(today(), -8)) ? db.reviews[k] : null;   // show it for about a week
+}
 function runDaily() {
   // Penalty for yesterday — issued only once across all devices:
   // the task carries a fixed id derived from the date, and with Drive on we wait for the
   // first successful sync so a phone opened on stale data can't invent a second one.
   const y = addDays(today(), -1), yp = db.plans[y];
   const canJudge = !Drive.configured() || syncedOnce;
-  if (yp && !yp.penaltyApplied && yp.quests.length && canJudge) {
+  if (yp && !yp.penaltyApplied && isRestDay(y)) { yp.penaltyApplied = true; touch(yp); save({ noRender: true }); }
+  else if (yp && !yp.penaltyApplied && yp.quests.length && canJudge) {
     const st = planStatus(yp);
     const penId = 'pen-' + y;
     yp.penaltyApplied = true; touch(yp);
@@ -513,6 +581,7 @@ Rules:
 - You may add at most 1 small new task in "newTasks" (e.g. a short training or health quest) only if the list is thin.
 - XP guidance: E 10, D 20, C 40, B 70, A 120, S 200; subtask quests 10-40. Gold ≈ XP/2.
 - A task's "messageToSystem" is the hunter's instruction for THAT task: follow it when you split it into subtasks and when you decide whether to assign it today.
+- If "isRestDayToday" is true this is a REST DAY: assign at most 3 short quests — only repeating habits, anything overdue or due within 2 days, and accepted side quests. Total minutes <= 45. The message should sound like permission to rest, not a push.
 - OBEY "standingOrders" — they are permanent rules from the hunter. Read "notesFromHunter" (what he wrote during recent days) and treat it as direct feedback to the coach: adjust the load, the schedule and the choice of tasks accordingly, and acknowledge it in one clause of the message.
 - "blockedRecently" lists quests he sent back because they were impossible. Do not re-assign a task that is still blocked for the same reason; prefer something he can actually move.
 - "recentFocusTimings" are real measured minutes. Use them to make your "minutes" estimates honest.
@@ -538,6 +607,7 @@ function plannerInput() {
   return {
     today: d, weekday: DAYS[weekday(d)], dailyMinutes: S().dailyMinutes, maxQuests: S().maxQuests,
     standingOrders: S().standing || '', notesFromHunter: notes, blockedRecently: blocked, recentFocusTimings: focus,
+    restDays: (S().restDays || []).map(i => DAYS[i]), isRestDayToday: isRestDay(),
     hunter: { name: S().name, level: p.level, rank: p.hunter, streak: p.streak, stats: p.stats },
     yesterday: yp ? planStatus(yp) : null, completionsLast7Days: last7,
     openTasks: liveTasks().filter(isActive).map(t => ({
@@ -681,6 +751,7 @@ const Drive = {
   },
   async whoami() { try { const r = await this.api('about?fields=user(emailAddress)'); const m = (await r.json())?.user?.emailAddress; if (m) LS.set('ss_email', m); } catch { } },
   async planFiles() { return this.q(`name contains 'ai-plan-' and trashed=false`); },
+  async reviewFiles() { return this.q(`name contains 'weekly-review-' and trashed=false`); },
   async writePlanFile(plan) {
     const name = `ai-plan-${plan.date}.json`;
     const ex = (await this.planFiles()).find(f => f.name.startsWith(name.replace('.json', '')));
@@ -712,6 +783,11 @@ async function sync(opts = {}) {
       const date = m[1]; if (date !== d && date !== y) continue;
       if (db.plans[date] && db.plans[date].source !== 'local') continue;
       try { const p = parseJSON(await Drive.readText(f)); p.date = date; if (applyPlan(p, p.source || 'claude') && date === d) { sfx('level'); popup({ title: 'Daily Quest Arrived', text: esc(p.message || 'New quests assigned.') }); } } catch (e) { console.warn('bad plan file', f.name, e); }
+    }
+    for (const f of await Drive.reviewFiles()) {
+      const m = f.name.match(/weekly-review-(\d{4}-\d{2}-\d{2})/); if (!m) continue;
+      if (m[1] < addDays(d, -10) || db.reviews?.[m[1]]) continue;
+      try { const r = parseJSON(await Drive.readText(f)); r.date = m[1]; if (applyReview(r)) { sfx('level'); popup({ title: 'Weekly Review', text: esc((r.summary || '').slice(0, 220)) }); } } catch (e) { console.warn('bad review file', f.name, e); }
     }
     runDaily();
     const out = stableDB(db);
@@ -924,7 +1000,7 @@ function viewQuests(p) {
   } else {
     const st = planStatus(plan);
     h += `<div class="quest-title">${esc(plan.title || 'DAILY QUEST')}</div>
-      <div class="quest-sub">${esc(fmtDay(d))} · issued by ${esc(plan.source)}</div>
+      <div class="quest-sub">${esc(fmtDay(d))} · issued by ${esc(plan.source)}${isRestDay(d) ? ' · <span class="rest-badge">REST DAY</span>' : ''}</div>
       ${plan.message ? `<div class="sys-msg">${esc(plan.message)}</div>` : ''}
       <div class="section-title" style="margin-top:6px">GOALS <span>${st.done}/${st.total}</span></div>`;
     if (!plan.quests.length) h += `<div class="empty">No quests today. Rest is also training.</div>`;
@@ -952,12 +1028,29 @@ function viewQuests(p) {
     if (blocked.length) h += `<div class="blocked-box"><b>Returned to Tasks</b>${blocked.map(({ q, i }) => `<div class="row" style="margin-top:4px"><span class="grow">${ICON.back} ${esc(questTitle(q))}${q.reason ? ` <span class="muted">— ${esc(q.reason)}</span>` : ''}</span><button class="icon-btn" data-act="unblock" data-i="${i}" title="Put it back on today">↩</button></div>`).join('')}</div>`;
     h += `<div class="progress"><div style="width:${st.total ? st.done / st.total * 100 : 0}%"></div></div>`;
     if (plan.bonus?.text || plan.bonus?.xp) h += `<div class="bonus-box">${plan.bonusClaimed ? '✓ CLEARED — ' : 'CLEAR REWARD: '}+${plan.bonus.xp || 50} XP · +${plan.bonus.gold || 30} G${plan.bonus.text ? ' · ' + esc(plan.bonus.text) : ''}</div>`;
-    if (!plan.bonusClaimed) h += `<div class="warn-box"><b>WARNING:</b> Failure to complete the daily quest will result in an appropriate penalty.<br><span class="muted">${esc(plan.penalty?.title || '')}</span></div>`;
+    if (!plan.bonusClaimed && !isRestDay(d)) h += `<div class="warn-box"><b>WARNING:</b> Failure to complete the daily quest will result in an appropriate penalty.<br><span class="muted">${esc(plan.penalty?.title || '')}</span></div>`;
+    else if (!plan.bonusClaimed) h += `<div class="bonus-box" style="border-color:rgba(61,255,168,.4);color:#c8ffe6">Rest day — no penalty, and the streak holds even if you clear nothing.</div>`;
     h += `<div class="timer" id="timer">⏱ ${countdown()}</div>`;
   }
   h += `<div class="add-row" style="margin-top:14px"><input id="quickQuest" placeholder="Something urgent came up…" enterkeyhint="done" autocomplete="off"><button class="btn primary" data-act="addQuest">+</button></div>
     <p class="muted" style="font-size:12px;margin:6px 0 0">Added here it becomes a quest for today and lands in Tasks.</p>`;
   h += `</div></div>`;
+  // weekly review + side quests
+  const rev = latestReview();
+  if (rev) {
+    h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u2691</span>WEEKLY REVIEW <span style="margin-left:auto;font-size:12px;color:var(--muted)">${esc(fmtDay(rev.date))}</span></div><div class="sys-body">
+      ${rev.summary ? `<div class="sys-msg">${esc(rev.summary)}</div>` : ''}
+      ${rev.wins?.length ? `<div class="rev-list"><b>Cleared</b>${rev.wins.map(w => `<div>+ ${esc(w)}</div>`).join('')}</div>` : ''}
+      ${rev.slips?.length ? `<div class="rev-list slip"><b>Slipped</b>${rev.slips.map(w => `<div>− ${esc(w)}</div>`).join('')}</div>` : ''}
+      ${rev.focus ? `<div class="bonus-box">Focus for next week: ${esc(rev.focus)}</div>` : ''}
+      ${rev.sideQuests?.length ? `<div class="section-title">SIDE QUESTS <span>for living</span></div>
+        ${rev.sideQuests.map(q => `<div class="side ${q.accepted ? 'on' : ''}">
+          <div class="grow"><b>${esc(q.title)}</b>${q.why ? `<div class="muted" style="font-size:13px">${esc(q.why)}</div>` : ''}
+            <div class="muted" style="font-size:12px">${q.minutes} min · +${q.gold} G · ${q.stat}</div></div>
+          <button class="btn small ${q.accepted ? '' : 'primary'}" data-act="side" data-id="${rev.date}" data-sub="${q.ref}">${q.accepted ? 'drop' : 'accept'}</button>
+        </div>`).join('')}` : ''}
+    </div></div>`;
+  }
   // note to the System
   h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">✎</span>NOTE TO THE SYSTEM</div><div class="sys-body">
     <p class="muted" style="margin:0 0 8px;font-size:14px">Write anything the coach should know — it's read when the next plan is made. <span id="noteSaved" class="muted"></span></p>
@@ -1048,6 +1141,7 @@ function viewStatus(p) {
   h += `<div class="sys-window card"><div class="sys-head">TITLES</div><div class="sys-body"><div class="titles">${TITLES.map(t => { const ok = t.test(p); return `<button class="title-badge ${ok ? '' : 'locked'} ${S().title === t.id && ok ? 'eq' : ''}" data-act="equip" data-id="${t.id}" ${ok ? '' : 'disabled'}>${esc(t.name)}<small>${esc(t.desc)}</small></button>`; }).join('')}</div></div></div>`;
   // medals
   h += `<div class="sys-window card"><div class="sys-head">MEDALS <span style="margin-left:auto;color:var(--muted);font-size:12px">${p.medals.length}</span></div><div class="sys-body">`;
+  h += `<p class="muted" style="margin:0 0 10px;font-size:14px">A medal is proof a dungeon fell. Medals unlock the <b>Dungeon Conqueror</b> title and stay on your record for good.</p>`;
   h += p.medals.length ? `<div class="medals">${p.medals.slice().reverse().map(m => `<div class="medal ${m.rank}"><div class="mdisc">${m.rank}</div><div><b>${esc(m.name)}</b><small class="muted">${esc(fmtDay(m.day))}</small></div></div>`).join('')}</div>`
     : `<div class="empty">No medals yet. Clear a dungeon to earn one.</div>`;
   h += `</div></div>`;
@@ -1056,6 +1150,10 @@ function viewStatus(p) {
   const shown = p.shadows.slice().reverse().slice(0, ui.allShadows ? 400 : 24);
   h += `<div class="sys-window card"><div class="sys-head">SHADOW ARMY <span style="margin-left:auto;color:var(--muted);font-size:12px">${p.shadows.length}</span></div><div class="sys-body">
     <p class="muted" style="margin-top:0;font-size:14px">Every task you finish rises as a shadow. ${RANKS.slice().reverse().filter(r => byRank[r]).map(r => `<span class="rank ${r}" style="display:inline-grid">${r}</span>×${byRank[r]}`).join(' ')}</p>
+    <div class="arise-box"><div class="row" style="justify-content:space-between"><b style="font-family:Orbitron;font-size:13px;letter-spacing:.1em">READY TO CALL</b><span style="color:var(--purple);font-weight:700">${p.shadowsLeft}${p.shadowsSpent ? ` <span class="muted" style="font-weight:400">(${p.shadowsSpent} spent)</span>` : ''}</span></div>
+      <div class="row wrap" style="margin-top:8px">${Object.entries(SUMMONS).map(([k, it]) => `<button class="btn small ${p.shadowsLeft >= it.cost ? 'primary' : ''}" data-act="summon" data-id="${k}" ${p.shadowsLeft >= it.cost ? '' : 'disabled'} title="${esc(it.desc)}">${esc(it.name)} · ${it.cost}</button>`).join('')}</div>
+      ${p.buffXp2 ? `<div class="bonus-box" style="margin-top:8px">Double EXP is armed — it applies to the next quest you clear.</div>` : ''}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">${Object.values(SUMMONS).map(it => `<b>${esc(it.name)}</b> ${esc(it.desc)}`).join(' · ')}</p></div>
     ${p.shadows.length ? `<div class="shadows">${shown.map(s => `<div class="shadow ${s.rank}" title="${esc(s.name)} · ${esc(s.day)}"><span>${esc(s.name)}</span></div>`).join('')}</div>
     ${p.shadows.length > 24 ? `<button class="btn small ghost" data-act="tgShadows" style="margin-top:8px">${ui.allShadows ? 'Show less' : 'Show all ' + p.shadows.length}</button>` : ''}`
       : `<div class="empty">Your army is empty. Arise.</div>`}
@@ -1140,6 +1238,8 @@ function viewSettings() {
     <div><label>Max quests / day</label><input id="setMax" type="number" min="1" max="15" value="${s.maxQuests}"></div></div>
     <div class="grid2"><div><label>Timezone (UTC+)</label><input id="setTz" type="number" step="0.5" value="${s.tz}"></div>
     <div><label>Day resets at (hour)</label><input id="setReset" type="number" min="0" max="12" value="${s.resetHour}"></div></div>
+    <label>Rest days — only repeating and urgent quests, no penalty, streak safe</label>
+    <div class="days">${DAYS.map((d, i) => `<button class="${(S().restDays || []).includes(i) ? 'on' : ''}" data-act="restDay" data-id="${i}">${d}</button>`).join('')}</div>
     <label>Standing orders (every plan respects these)</label>
     <textarea id="setStanding" rows="3" placeholder="e.g. I train in the mornings · no coding on Sundays · never more than 2 job applications a day">${esc(s.standing || '')}</textarea>
     <label class="row" style="text-transform:none;letter-spacing:0;font-size:15px;margin-top:14px"><input type="checkbox" id="setSound" ${s.sound ? 'checked' : ''}> System sounds</label>
@@ -1333,6 +1433,9 @@ document.addEventListener('click', async e => {
     case 'genLocal': case 'genLocalForce': if (a === 'genLocalForce') delete db.plans[today()]; applyPlan(localPlan(), 'local'); sfx('level'); return save();
     case 'sync': if (!Drive.ready()) { try { await Drive.connect(''); } catch (err) { return toast(err.message); } } return sync();
     case 'equip': S().title = S().title === id ? '' : id; touch(S()); return save();
+    case 'summon': if (!confirmInline(b, 'Arise?')) return; return summon(id);
+    case 'side': return acceptSideQuest(id, b.dataset.sub);
+    case 'restDay': { const ds = new Set(S().restDays || []); const n = +id; ds.has(n) ? ds.delete(n) : ds.add(n); S().restDays = [...ds].sort(); touch(S()); return save(); }
     case 'awaken': if (!confirmInline(b, 'Tap again to Awaken')) return; return awaken();
     case 'tgShadows': ui.allShadows = !ui.allShadows; return render();
     case 'cal': ui.calMonth = id; return render();

@@ -32,3 +32,25 @@ If a file named `ai-plan-<today>.json` exists anywhere in Drive, **today is proc
 - Base the message on real facts: the streak, the last 7 days, yesterday's result, upcoming deadlines, and the hunter's note. Don't add fluff.
 - Don't re-assign a task that was blocked yesterday if the reason still stands. Adjust the load to what the note and the standing orders say.
 - A subtask title that isn't already on a task is created automatically.
+
+---
+
+# Weekly review (Friday evening scheduled task)
+
+## Input
+Same `system-db.json`. Look at the last 7 days: `log` (done/sub/bonus/focus by `day`), `plans` (cleared vs failed, blocked quests and their reasons), `notes`, `tasks` (what is overdue or untouched), `settings.restDays` and `settings.standing`.
+
+## Output: create `weekly-review-<friday-date>.json` in the `SoloSystem` folder
+```json
+{"date":"YYYY-MM-DD","weekOf":"Sep 21-27",
+ "summary":"2-4 sentences, System voice, grounded in the real numbers",
+ "wins":["what actually got cleared"],
+ "slips":["what slipped, with the honest reason"],
+ "focus":"one sentence: the single thing next week turns on",
+ "sideQuests":[{"ref":"sq1","title":"Volleyball with friends on Saturday evening","why":"one line grounded in his week","rank":"D","stat":"STR","gold":80,"minutes":120}]}
+```
+## Rules for side quests
+- 3-4 of them, for **living**, not productivity: sport with other people, being outdoors, something with friends or family, hands-on or cultural, something restful. Never work, study or chores.
+- Invent them yourself from what the week looked like: long screen streaks → get outside; no social entries → something with people; heavy training week → something calm.
+- Concrete and doable on the coming rest days, each with a gold reward (60-150). The hunter accepts the ones he wants in the app; they become tasks due at the end of the rest block.
+- Rest days (`settings.restDays`) get at most 3 short quests, ≤45 minutes total, and never a penalty.
