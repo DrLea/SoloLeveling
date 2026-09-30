@@ -50,16 +50,19 @@ const ICON = {
 };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const AWAKEN_LEVEL = 30, AWAKEN_BONUS = 0.10;
-const SUMMONS = {
-  xp2: { name: 'Double EXP', cost: 10, desc: 'The next quest you clear gives double EXP' },
-  gold: { name: 'Extraction', cost: 15, desc: 'The shadows bring back 200 gold' },
-  shield: { name: 'Shadow Shield', cost: 25, desc: 'A shield that absorbs one failed daily quest' }
+const SUMMONS = {   // paid with mana, which gathers every day
+  xp2: { name: 'Double EXP', cost: 20, desc: 'The next quest you clear gives double EXP' },
+  skip: { name: 'Skip Token', cost: 15, desc: 'Drop one quest today without a penalty' },
+  shield: { name: 'Streak Shield', cost: 35, desc: 'Absorbs one failed daily quest — no penalty, streak kept' }
 };
-const ITEMS = {
-  skip: { name: 'Skip Token', icon: '⏭', cost: 120, desc: 'Drop one of today\'s quests without a penalty' },
-  shield: { name: 'Streak Shield', icon: '⛨', cost: 200, desc: 'Absorbs one failed daily quest — no penalty, streak kept' },
-  potion: { name: 'EXP Potion', icon: '⚗', cost: 150, desc: 'Double EXP until the day resets' }
+const ITEMS = {   // summoned with mana now, never bought with gold
+  skip: { name: 'Skip Token', icon: '⏭', desc: 'Drop one of today\'s quests without a penalty' },
+  shield: { name: 'Streak Shield', icon: '⛨', desc: 'Absorbs one failed daily quest — no penalty, streak kept' },
+  potion: { name: 'EXP Potion', icon: '⚗', desc: 'Double EXP until the day resets' }
 };
+const RANK_WEIGHT = { E: 1, D: 2, C: 4, B: 7, A: 12, S: 20 };   // how strong a shadow is
+const MANA_PER_DAY = 10, MANA_ON_CLEAR = 10;
+const reviveCost = rank => RANK_WEIGHT[rank] * 3;
 const TITLES = [
   { id: 'awakened', name: 'The Awakened', desc: 'Reach level 2', test: p => p.level >= 2 },
   { id: 'wolf', name: 'Wolf Slayer', desc: 'Complete 10 tasks', test: p => p.doneCount >= 10 },
@@ -68,12 +71,13 @@ const TITLES = [
   { id: 'scholar', name: 'Scholar of the Abyss', desc: 'INT 30', test: p => p.stats.INT >= 30 },
   { id: 'swift', name: 'Swift Shadow', desc: 'AGI 30', test: p => p.stats.AGI >= 30 },
   { id: 'dungeon', name: 'Dungeon Breaker', desc: 'Clear an S-rank task', test: p => p.sClears >= 1 },
+  { id: 'darkheart', name: 'Dark Heart', desc: 'Bring 25 fallen shadows back', test: p => p.revived >= 25 },
   { id: 'survivor', name: 'Penalty Zone Survivor', desc: 'Complete a penalty quest', test: p => p.penaltyClears >= 1 },
   { id: 'daily', name: 'The One Who Doesn\'t Skip', desc: 'Clear 30 daily quests', test: p => p.dailyClears >= 30 },
   { id: 'hoarder', name: 'Gold Hoarder', desc: 'Earn 2000 gold total', test: p => p.goldEarned >= 2000 },
   { id: 'monarch', name: 'Shadow Monarch', desc: 'Reach level 70', test: p => p.level >= 70 },
-  { id: 'conqueror', name: 'Dungeon Conqueror', desc: 'Clear 5 dungeons', test: p => p.medals.length >= 5 },
-  { id: 'army', name: 'Commander of Shadows', desc: '100 shadows in your army', test: p => p.doneCount >= 100 },
+  { id: 'conqueror', name: 'Dungeon Conqueror', desc: 'Clear 5 dungeons', test: p => p.dungeonClears >= 5 },
+  { id: 'army', name: 'Commander of Shadows', desc: 'Army power of 300', test: p => p.armyPower >= 300 },
   { id: 'awakened1', name: 'The Awakened One', desc: 'Awaken once', test: p => p.awakenings >= 1 },
   { id: 'awakened3', name: 'Beyond the Limit', desc: 'Awaken 3 times', test: p => p.awakenings >= 3 }
 ];
@@ -85,7 +89,7 @@ const DEFAULT_SETTINGS = {
   autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], updatedAt: 0
 };
 function emptyDB() {
-  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
 }
 let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
@@ -105,7 +109,20 @@ function addMonths(key, n) { const d = new Date(key + 'T00:00:00Z'); d.setUTCMon
 function weekday(key) { return new Date(key + 'T00:00:00Z').getUTCDay(); }
 function fmtDay(key) { if (!key) return ''; const t = today(); if (key === t) return 'today'; if (key === addDays(t, 1)) return 'tomorrow'; if (key === addDays(t, -1)) return 'yesterday'; const d = new Date(key + 'T00:00:00Z'); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' }); }
 const today = () => dayKey();
-function isRestDay(d = today()) { return (S().restDays || []).includes(weekday(d)); }
+function isRestDay(d = today()) {
+  const mark = db.restDates?.[d];                     // a day marked in the calendar wins
+  if (mark) return !!mark.rest;
+  return (S().restDays || []).includes(weekday(d));
+}
+function toggleRestDate(d) {
+  if (!db.restDates) db.restDates = {};
+  const byWeekday = (S().restDays || []).includes(weekday(d));
+  const cur = isRestDay(d);
+  if (!cur === byWeekday) delete db.restDates[d];      // back to whatever the weekday says
+  else db.restDates[d] = touch({ date: d, rest: !cur });
+  toast(!cur ? 'Marked as a rest day' : 'Back to a normal day');
+  save();
+}
 
 // ---------- crypto
 async function deriveKey(pw, saltB64) {
@@ -150,7 +167,7 @@ function mergeMaps(a = {}, b = {}) {
 function mergeDB(a, b) {
   if (!b) return a; if (!a) return b;
   const m = emptyDB();
-  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews']) m[c] = mergeMaps(a[c], b[c]);
+  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews', 'restDates']) m[c] = mergeMaps(a[c], b[c]);
   m.settings = { ...DEFAULT_SETTINGS, ...((b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings) };
   m.security = (b.security?.updatedAt || 0) > (a.security?.updatedAt || 0) ? b.security : a.security;
   return m;
@@ -250,9 +267,10 @@ function afterProgress(before) {
 function levelFrom(xp) { let l = 1, need = 100, rest = xp; while (rest >= need) { rest -= need; l++; need = 100 + (l - 1) * 40; } return { level: l, cur: rest, need }; }
 function player() {
   let rawXp = 0, spentXp = 0, awakenings = 0, goldEarned = 0, goldSpent = 0, doneCount = 0, sClears = 0, penaltyClears = 0, dailyClears = 0;
-  let shadowsSpent = 0, buffXp2 = false;
+  let manaEarned = 0, manaSpent = 0, revived = 0, dungeonClears = 0, buffXp2 = false;
+  const fallen = new Set(), reviveRefs = new Set();
   const statXp = { STR: 0, INT: 0, AGI: 0, VIT: 0, PER: 0 };
-  const byDay = {}, xpByDay = {}, medals = [], shadows = [], inv = { skip: 0, shield: 0, potion: 0 }, shieldDays = new Set();
+  const byDay = {}, xpByDay = {}, shadows = [], inv = { skip: 0, shield: 0, potion: 0 }, shieldDays = new Set();
   let potionDay = '';
   for (const e of Object.values(db.log).sort((a, b) => a.at - b.at)) {
     if (e.deleted) continue;
@@ -263,8 +281,8 @@ function player() {
       if (e.type !== 'bonus') byDay[e.day] = (byDay[e.day] || 0) + 1;
       if (e.type === 'done') {
         doneCount++; if (e.rank === 'S') sClears++; if (e.origin === 'penalty') penaltyClears++;
-        shadows.push({ name: e.title, rank: e.rank || 'E', day: e.day, stat: e.stat });
-        if (e.dungeon) medals.push({ name: e.title, rank: e.rank || 'C', day: e.day });
+        shadows.push({ id: e.id, name: e.title, rank: e.rank || 'E', day: e.day, stat: e.stat, elite: ['A', 'S'].includes(e.rank) });
+        if (e.dungeon) dungeonClears++;
       }
       if (e.type === 'bonus') dailyClears++;
     }
@@ -276,9 +294,16 @@ function player() {
       if (e.key === 'potion') potionDay = e.day;
     }
     if (e.type === 'awaken') { awakenings++; spentXp += +e.xpSpent || 0; }
-    if (e.type === 'arise') { shadowsSpent += +e.shadows || 0; if (e.kind === 'xp2' && !e.used) buffXp2 = true; }
+    if (e.type === 'arise') { manaSpent += +e.mana || 0; if (e.kind === 'xp2' && !e.used) buffXp2 = true; }
+    if (e.type === 'mana') manaEarned += +e.amount || 0;
+    if (e.type === 'fall') (e.ids || []).forEach(id => fallen.add(id));
+    if (e.type === 'revive') { manaSpent += +e.mana || 0; reviveRefs.add(e.shadowId); revived++; }
   }
   const xp = Math.max(0, rawXp - spentXp);
+  // a shadow that fell stays in the army, only dimmed, until mana brings it back
+  shadows.forEach(sh => { sh.fallen = fallen.has(sh.id) && !reviveRefs.has(sh.id); });
+  const armyPower = shadows.reduce((a, sh) => a + (sh.fallen ? 0 : (RANK_WEIGHT[sh.rank] || 1)), 0);
+  const fullPower = shadows.reduce((a, sh) => a + (RANK_WEIGHT[sh.rank] || 1), 0);
   const lv = levelFrom(xp);
   const stats = {}; for (const k in statXp) stats[k] = 10 + Math.floor(statXp[k] / 25);
   let hunter = 'E'; for (const [l, r] of HUNTER_RANKS) if (lv.level >= l) hunter = r;
@@ -290,21 +315,41 @@ function player() {
   for (const k of days) { run = prev && addDays(prev, 1) === k ? run + 1 : 1; best = Math.max(best, run); prev = k; }
   return {
     xp, totalXp: rawXp, ...lv, gold: goldEarned - goldSpent, goldEarned, stats, hunter, streak, bestStreak: best,
-    doneCount, sClears, penaltyClears, dailyClears, byDay, xpByDay, awakenings, medals, shadows, inv, shieldDays,
-    shadowsSpent, shadowsLeft: Math.max(0, doneCount - shadowsSpent), buffXp2,
+    doneCount, sClears, penaltyClears, dailyClears, dungeonClears, byDay, xpByDay, awakenings, shadows, inv, shieldDays,
+    mana: Math.max(0, manaEarned - manaSpent), manaEarned, manaSpent, revived, buffXp2,
+    fallenIds: fallen, reviveRefs, armyPower, fullPower,
+    fallenShadows: shadows.filter(sh => sh.fallen), elites: shadows.filter(sh => sh.elite),
     potionActive: potionDay === today(),
     xpMult: (1 + AWAKEN_BONUS * awakenings) * (potionDay === today() ? 2 : 1) * (buffXp2 ? 2 : 1)
   };
 }
 function summon(kind) {
   const it = SUMMONS[kind]; const p = player();
-  if (!it || p.shadowsLeft < it.cost) return toast('Not enough shadows');
-  logAdd({ type: 'arise', kind, shadows: it.cost, title: `Arise: ${it.name}` });
-  if (kind === 'gold') logAdd({ type: 'done', title: 'Shadow extraction', xp: 0, gold: 200, stat: null, rank: 'E', origin: 'arise' });
+  if (!it || p.mana < it.cost) return toast('Not enough mana');
+  logAdd({ type: 'arise', kind, mana: it.cost, title: `Arise: ${it.name}` });
+  if (kind === 'skip') logAdd({ type: 'item', key: 'skip', cost: 0, title: 'Skip Token (summoned)' });
   if (kind === 'shield') logAdd({ type: 'item', key: 'shield', cost: 0, title: 'Shadow Shield (summoned)' });
   sfx('level');
-  popup({ cls: 'levelup', title: 'ARISE', text: `${it.cost} shadows answer the call.`, reward: esc(it.desc) });
+  popup({ cls: 'levelup', title: 'ARISE', text: esc(it.name), reward: esc(it.desc) });
   save();
+}
+// fallen shadows are never deleted — mana raises them again
+function revive(shadowId) {
+  const p = player(); const sh = p.shadows.find(x => x.id === shadowId);
+  if (!sh || !sh.fallen) return;
+  const cost = reviveCost(sh.rank);
+  if (p.mana < cost) return toast(`Needs ${cost} mana`);
+  logAdd({ type: 'revive', shadowId, mana: cost, title: `Arise: ${sh.name}` });
+  sfx('level'); toast(`⟡ ${sh.name} rises again`); save();
+}
+function reviveAll() {
+  const p = player(); let mana = p.mana, n = 0;
+  for (const sh of p.fallenShadows.slice().sort((a, b) => RANK_WEIGHT[b.rank] - RANK_WEIGHT[a.rank])) {
+    const cost = reviveCost(sh.rank); if (mana < cost) continue;
+    logAdd({ type: 'revive', shadowId: sh.id, mana: cost, title: `Arise: ${sh.name}` }); mana -= cost; n++;
+  }
+  if (!n) return toast('Not enough mana');
+  sfx('level'); popup({ cls: 'levelup', title: 'ARISE', text: `${n} shadow${n === 1 ? '' : 's'} answer the call.` }); save();
 }
 // the Double EXP buff is spent by the next completed quest
 function consumeBuff() {
@@ -339,7 +384,8 @@ function checkDailyClear() {
     p.bonusClaimed = true; touch(p);
     const xp = +p.bonus?.xp || 50, gold = +p.bonus?.gold || 30;
     logAdd({ id: 'bonus-' + p.date, type: 'bonus', title: 'Daily Quest Cleared', xp, gold, stat: null });
-    setTimeout(() => { sfx('level'); popup({ title: 'Daily Quest Cleared', text: 'The daily quest has been completed.', reward: `+${xp} XP · +${gold} G${p.bonus?.text ? '<br>🎁 ' + esc(p.bonus.text) : ''}` }); }, 900);
+    logAdd({ id: 'mana-clear-' + p.date, type: 'mana', amount: MANA_ON_CLEAR, title: 'Mana from a cleared day' });
+    setTimeout(() => { sfx('level'); popup({ title: 'Daily Quest Cleared', text: 'The daily quest has been completed.', reward: `+${xp} XP · +${gold} G · +${MANA_ON_CLEAR} mana${p.bonus?.text ? '<br>🎁 ' + esc(p.bonus.text) : ''}` }); }, 900);
   }
 }
 function applyPlan(p, source) {
@@ -546,7 +592,17 @@ function latestReview() {
   if (!k) return null;
   return (k >= addDays(today(), -8)) ? db.reviews[k] : null;   // show it for about a week
 }
+// deterministic pick, so phone and desktop choose exactly the same shadows
+function seededPick(arr, n, seed) {
+  let h = 0; for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const pool = arr.slice(), out = [];
+  while (pool.length && out.length < n) { h = (h * 1103515245 + 12345) >>> 0; out.push(pool.splice(h % pool.length, 1)[0]); }
+  return out;
+}
 function runDaily() {
+  // mana gathers every day, once, whichever device opens first
+  const manaId = 'mana-' + today();
+  if (!db.log[manaId]) { logAdd({ id: manaId, type: 'mana', amount: MANA_PER_DAY, title: 'Mana gathered' }); save({ noRender: true }); }
   // Penalty for yesterday — issued only once across all devices:
   // the task carries a fixed id derived from the date, and with Drive on we wait for the
   // first successful sync so a phone opened on stale data can't invent a second one.
@@ -562,6 +618,11 @@ function runDaily() {
       logAdd({ id: 'shield-' + y, type: 'use', key: 'shield', forDay: y, title: 'Streak Shield' });
       setTimeout(() => { sfx('level'); popup({ title: 'Streak Shield Used', text: `Yesterday's daily quest was not cleared (${st.done}/${st.total}).<br>The shield absorbed the penalty.`, reward: 'Streak preserved.' }); }, 600);
     } else if (st.done < st.total && !shieldUsed && !db.tasks[penId]) {
+      // shadows fall when the day is lost — one per missed quest, chosen the same way on every device
+      const p0 = player();
+      const alive = p0.shadows.filter(sh => !sh.fallen).map(sh => sh.id);
+      const ids = seededPick(alive, Math.min(alive.length, st.total - st.done), y);
+      if (ids.length) logAdd({ id: 'fall-' + y, type: 'fall', ids, title: `${ids.length} shadow${ids.length === 1 ? '' : 's'} fell` });
       const pen = yp.penalty || {};
       newTask(pen.title || 'Penalty Quest: survive', { id: penId, origin: 'penalty', rank: RANKS.includes(pen.rank) ? pen.rank : 'C', stat: STATS[pen.stat] ? pen.stat : 'STR', deadline: today(), pinDay: today() });
       setTimeout(() => { sfx('fail'); popup({ cls: 'fail', title: 'Penalty Zone', text: `Yesterday's daily quest was not completed (${st.done}/${st.total}).<br>A penalty quest has been issued.`, reward: esc(pen.title || '') }); }, 600);
@@ -1139,22 +1200,30 @@ function viewStatus(p) {
   h += `<div class="sys-window card"><div class="sys-head">LAST 7 DAYS</div><div class="sys-body"><div class="bars">${days.map(d => `<div class="b"><span>${p.byDay[d] || 0}</span><i style="height:${(p.byDay[d] || 0) / mx * 70}px"></i><span>${DAYS[weekday(d)]}</span></div>`).join('')}</div>
     <p class="muted" style="font-size:14px;margin:10px 0 0">Tasks cleared: <b>${p.doneCount}</b> · Daily quests cleared: <b>${p.dailyClears}</b> · Total EXP: <b>${p.xp}</b></p></div></div>`;
   h += `<div class="sys-window card"><div class="sys-head">TITLES</div><div class="sys-body"><div class="titles">${TITLES.map(t => { const ok = t.test(p); return `<button class="title-badge ${ok ? '' : 'locked'} ${S().title === t.id && ok ? 'eq' : ''}" data-act="equip" data-id="${t.id}" ${ok ? '' : 'disabled'}>${esc(t.name)}<small>${esc(t.desc)}</small></button>`; }).join('')}</div></div></div>`;
-  // medals
-  h += `<div class="sys-window card"><div class="sys-head">MEDALS <span style="margin-left:auto;color:var(--muted);font-size:12px">${p.medals.length}</span></div><div class="sys-body">`;
-  h += `<p class="muted" style="margin:0 0 10px;font-size:14px">A medal is proof a dungeon fell. Medals unlock the <b>Dungeon Conqueror</b> title and stay on your record for good.</p>`;
-  h += p.medals.length ? `<div class="medals">${p.medals.slice().reverse().map(m => `<div class="medal ${m.rank}"><div class="mdisc">${m.rank}</div><div><b>${esc(m.name)}</b><small class="muted">${esc(fmtDay(m.day))}</small></div></div>`).join('')}</div>`
-    : `<div class="empty">No medals yet. Clear a dungeon to earn one.</div>`;
-  h += `</div></div>`;
-  // shadow army
-  const byRank = {}; p.shadows.forEach(s => byRank[s.rank] = (byRank[s.rank] || 0) + 1);
+  // shadow army — an immortal record; fallen shadows only dim until mana raises them
+  const byRank = {}; p.shadows.forEach(sh => byRank[sh.rank] = (byRank[sh.rank] || 0) + 1);
+  const elites = p.elites.slice().reverse();
   const shown = p.shadows.slice().reverse().slice(0, ui.allShadows ? 400 : 24);
-  h += `<div class="sys-window card"><div class="sys-head">SHADOW ARMY <span style="margin-left:auto;color:var(--muted);font-size:12px">${p.shadows.length}</span></div><div class="sys-body">
-    <p class="muted" style="margin-top:0;font-size:14px">Every task you finish rises as a shadow. ${RANKS.slice().reverse().filter(r => byRank[r]).map(r => `<span class="rank ${r}" style="display:inline-grid">${r}</span>×${byRank[r]}`).join(' ')}</p>
-    <div class="arise-box"><div class="row" style="justify-content:space-between"><b style="font-family:Orbitron;font-size:13px;letter-spacing:.1em">READY TO CALL</b><span style="color:var(--purple);font-weight:700">${p.shadowsLeft}${p.shadowsSpent ? ` <span class="muted" style="font-weight:400">(${p.shadowsSpent} spent)</span>` : ''}</span></div>
-      <div class="row wrap" style="margin-top:8px">${Object.entries(SUMMONS).map(([k, it]) => `<button class="btn small ${p.shadowsLeft >= it.cost ? 'primary' : ''}" data-act="summon" data-id="${k}" ${p.shadowsLeft >= it.cost ? '' : 'disabled'} title="${esc(it.desc)}">${esc(it.name)} · ${it.cost}</button>`).join('')}</div>
+  h += `<div class="sys-window card"><div class="sys-head">SHADOW ARMY <span style="margin-left:auto;font-size:12px;color:var(--muted)">${p.shadows.length} risen</span></div><div class="sys-body">
+    <div class="army-top">
+      <div><div class="army-num">${p.armyPower}</div><small>ARMY POWER${p.armyPower < p.fullPower ? ` <span style="color:var(--red)">/ ${p.fullPower}</span>` : ''}</small></div>
+      <div><div class="army-num mana">${p.mana}</div><small>MANA · +${MANA_PER_DAY}/day</small></div>
+    </div>
+    <p class="muted" style="font-size:13px;margin:10px 0 0">Every cleared task rises as a shadow and stays forever. Strength by rank: ${RANKS.map(r => `<span class="rank ${r}" style="display:inline-grid">${r}</span>${RANK_WEIGHT[r]}`).join(' ')}</p>
+    ${p.fallenShadows.length ? `<div class="fallen-box">
+      <div class="row" style="justify-content:space-between"><b>FALLEN · ${p.fallenShadows.length}</b><button class="btn small primary" data-act="reviveAll">Arise all</button></div>
+      <p class="muted" style="font-size:13px;margin:6px 0">They fell when a day was lost. Mana brings them back — cost is their rank.</p>
+      ${p.fallenShadows.slice().reverse().slice(0, 12).map(sh => `<div class="row" style="margin:4px 0"><span class="rank ${sh.rank}">${sh.rank}</span><span class="grow muted">${esc(sh.name)}</span>
+        <button class="btn small ${p.mana >= reviveCost(sh.rank) ? 'primary' : ''}" data-act="revive" data-id="${sh.id}" ${p.mana >= reviveCost(sh.rank) ? '' : 'disabled'}>${reviveCost(sh.rank)} mana</button></div>`).join('')}
+    </div>` : ''}
+    <div class="arise-box"><b style="font-family:Orbitron;font-size:12px;letter-spacing:.14em">COMMAND</b>
+      <div class="row wrap" style="margin-top:8px">${Object.entries(SUMMONS).map(([k, it]) => `<button class="btn small ${p.mana >= it.cost ? 'primary' : ''}" data-act="summon" data-id="${k}" ${p.mana >= it.cost ? '' : 'disabled'} title="${esc(it.desc)}">${esc(it.name)} · ${it.cost}</button>`).join('')}</div>
       ${p.buffXp2 ? `<div class="bonus-box" style="margin-top:8px">Double EXP is armed — it applies to the next quest you clear.</div>` : ''}
       <p class="muted" style="font-size:12px;margin:8px 0 0">${Object.values(SUMMONS).map(it => `<b>${esc(it.name)}</b> ${esc(it.desc)}`).join(' · ')}</p></div>
-    ${p.shadows.length ? `<div class="shadows">${shown.map(s => `<div class="shadow ${s.rank}" title="${esc(s.name)} · ${esc(s.day)}"><span>${esc(s.name)}</span></div>`).join('')}</div>
+    ${elites.length ? `<div class="section-title">ELITE <span>rank A and S</span></div>
+      <div class="elites">${elites.slice(0, 20).map(sh => `<div class="elite ${sh.rank} ${sh.fallen ? 'down' : ''}"><span class="rank ${sh.rank}">${sh.rank}</span><div class="grow"><b>${esc(sh.name)}</b><small class="muted">${esc(fmtDay(sh.day))}${sh.fallen ? ' · fallen' : ''}</small></div></div>`).join('')}</div>` : ''}
+    <div class="section-title">ARMY <span>${p.shadows.length}</span></div>
+    ${p.shadows.length ? `<div class="shadows">${shown.map(sh => `<div class="shadow ${sh.rank} ${sh.fallen ? 'down' : ''}" title="${esc(sh.name)} · ${esc(sh.day)}${sh.fallen ? ' · fallen' : ''}"><span>${esc(sh.name)}</span></div>`).join('')}</div>
     ${p.shadows.length > 24 ? `<button class="btn small ghost" data-act="tgShadows" style="margin-top:8px">${ui.allShadows ? 'Show less' : 'Show all ' + p.shadows.length}</button>` : ''}`
       : `<div class="empty">Your army is empty. Arise.</div>`}
   </div></div>`;
@@ -1173,22 +1242,24 @@ function viewLog(p) {
   let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">▦</span>RECORD</div><div class="sys-body">
     <div class="row" style="justify-content:space-between;margin-bottom:10px"><button class="icon-btn" data-act="cal" data-id="${prev}">‹</button>
       <b style="font-family:Orbitron;letter-spacing:.1em">${MONTHS[m - 1]} ${y}</b>
-      <button class="icon-btn" data-act="cal" data-id="${next}" ${next > today().slice(0, 7) ? 'disabled' : ''}>›</button></div>
+      <button class="icon-btn" data-act="cal" data-id="${next}">›</button></div>
     <div class="cal">${['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map(d => `<div class="cal-h">${d}</div>`).join('')}`;
   for (const c of cells) {
     if (!c) { h += `<div></div>`; continue; }
     const xp = p.xpByDay[c] || 0, plan = db.plans[c], st = plan ? planStatus(plan) : null;
     const cleared = plan && plan.bonusClaimed, failed = plan && c < today() && st.done < st.total && !p.shieldDays.has(c);
     const a = xp ? 0.15 + 0.85 * Math.min(1, xp / maxXp) : 0;
-    h += `<button class="cal-d ${c === today() ? 'today' : ''} ${ui.calDay === c ? 'sel' : ''} ${cleared ? 'cleared' : ''} ${failed ? 'failed' : ''}" data-act="calday" data-id="${c}" style="--a:${a}">
+    h += `<button class="cal-d ${c === today() ? 'today' : ''} ${ui.calDay === c ? 'sel' : ''} ${cleared ? 'cleared' : ''} ${failed ? 'failed' : ''} ${isRestDay(c) ? 'rest' : ''}" data-act="calday" data-id="${c}" style="--a:${a}">
       <span>${+c.slice(8)}</span>${xp ? `<i>${xp}</i>` : ''}</button>`;
   }
-  h += `</div><div class="cal-legend muted"><span class="lg cleared"></span>daily quest cleared <span class="lg failed"></span>failed <span class="lg xp"></span>EXP earned</div></div></div>`;
+  h += `</div><div class="cal-legend muted"><span class="lg cleared"></span>daily quest cleared <span class="lg failed"></span>failed <span class="lg xp"></span>EXP earned <span class="lg rest"></span>rest day</div></div></div>`;
   const d = ui.calDay;
   if (d) {
     const plan = db.plans[d];
     const entries = Object.values(db.log).filter(e => !e.deleted && e.day === d).sort((a, b) => a.at - b.at);
-    h += `<div class="sys-window card"><div class="sys-head">${esc(fmtDay(d))} <span style="margin-left:auto;font-size:12px;color:var(--muted)">${d}</span></div><div class="sys-body">`;
+    h += `<div class="sys-window card"><div class="sys-head">${esc(fmtDay(d))} <span style="margin-left:auto;font-size:12px;color:var(--muted)">${d}</span></div><div class="sys-body">
+      <div class="row" style="margin-bottom:12px"><button class="btn small ${isRestDay(d) ? 'primary' : ''}" data-act="restDate" data-id="${d}">${isRestDay(d) ? '✓ rest day' : 'make it a rest day'}</button>
+      <span class="muted" style="font-size:13px">${isRestDay(d) ? 'only habits and what burns, no penalty' : 'mark holidays and days off in advance'}</span></div>`;
     if (plan) {
       const st = planStatus(plan); const blocked = plan.quests.filter(q => q.blocked);
       h += `<div class="sys-msg"><b>${esc(plan.title || 'Daily Quest')}</b> — ${st.done}/${st.total} cleared${plan.bonusClaimed ? ' ✓' : ''}<br><span class="muted">${esc(plan.message || '')}</span>
@@ -1217,16 +1288,7 @@ function viewShop(p) {
     <div class="row"><input id="shopName" placeholder="Reward (e.g. 1h gaming)" class="grow"><input id="shopCost" type="number" placeholder="G" style="width:90px" min="1"><button class="btn primary" data-act="shopAdd">+</button></div>`;
   h += items.length ? items.map(i => `<div class="shop-item"><div class="grow">${esc(i.title)}</div><span class="price">${i.cost} G</span><button class="btn small ${p.gold >= i.cost ? 'primary' : ''}" data-act="buy" data-id="${i.id}" ${p.gold >= i.cost ? '' : 'disabled'}>Buy</button><button class="icon-btn" data-act="shopDel" data-id="${i.id}">✕</button></div>`).join('') : `<div class="empty">No rewards yet.</div>`;
   h += `</div></div>`;
-  // system items
-  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">⚔</span>SYSTEM ITEMS</div><div class="sys-body">
-    <p class="muted" style="margin-top:0;font-size:14px">Bought with gold, used when the day goes wrong.</p>
-    ${Object.entries(ITEMS).map(([k, it]) => `<div class="shop-item"><span class="item-ico">${it.icon}</span><div class="grow"><b>${it.name}</b> ${p.inv[k] ? `<span class="owned">×${p.inv[k]}</span>` : ''}<div class="muted" style="font-size:13px">${esc(it.desc)}</div></div>
-      <span class="price">${it.cost} G</span><button class="btn small ${p.gold >= it.cost ? 'primary' : ''}" data-act="buyItem" data-id="${k}" ${p.gold >= it.cost ? '' : 'disabled'}>Buy</button>
-      ${k === 'potion' && p.inv.potion && !p.potionActive ? `<button class="btn small" data-act="useItem" data-id="potion">Use</button>` : ''}</div>`).join('')}
-    ${p.potionActive ? `<div class="bonus-box">⚗ EXP Potion active — double EXP until the day resets.</div>` : ''}
-    ${p.inv.shield ? `<p class="muted" style="font-size:13px">⛨ ${p.inv.shield} shield(s) ready — used automatically when a daily quest fails.</p>` : ''}
-    ${p.inv.skip ? `<p class="muted" style="font-size:13px">⏭ ${p.inv.skip} skip token(s) — the skip button sits next to each quest.</p>` : ''}
-  </div></div>`;
+  h += `<p class="muted" style="font-size:13px;margin:0 0 12px">Skip tokens, shields and EXP potions are no longer bought — the army summons them with mana (Status tab).</p>`;
   if (buys.length) h += `<div class="section-title">PURCHASE LOG</div>` + buys.map(b => `<div class="shop-item"><div class="grow">${esc(b.title)}<div class="muted" style="font-size:13px">${esc(fmtDay(b.day))}</div></div><span class="price">-${b.cost} G</span></div>`).join('');
   return h;
 }
@@ -1434,17 +1496,15 @@ document.addEventListener('click', async e => {
     case 'sync': if (!Drive.ready()) { try { await Drive.connect(''); } catch (err) { return toast(err.message); } } return sync();
     case 'equip': S().title = S().title === id ? '' : id; touch(S()); return save();
     case 'summon': if (!confirmInline(b, 'Arise?')) return; return summon(id);
+    case 'revive': return revive(id);
+    case 'reviveAll': if (!confirmInline(b, 'Arise all?')) return; return reviveAll();
+    case 'restDate': return toggleRestDate(id);
     case 'side': return acceptSideQuest(id, b.dataset.sub);
     case 'restDay': { const ds = new Set(S().restDays || []); const n = +id; ds.has(n) ? ds.delete(n) : ds.add(n); S().restDays = [...ds].sort(); touch(S()); return save(); }
     case 'awaken': if (!confirmInline(b, 'Tap again to Awaken')) return; return awaken();
     case 'tgShadows': ui.allShadows = !ui.allShadows; return render();
     case 'cal': ui.calMonth = id; return render();
     case 'calday': ui.calDay = ui.calDay === id ? '' : id; return render();
-    case 'buyItem': {
-      const it = ITEMS[id]; if (player().gold < it.cost) return;
-      if (!confirmInline(b, `${it.cost} G?`)) return;
-      logAdd({ type: 'item', key: id, cost: it.cost, title: it.name }); sfx('done'); toast(`${it.icon} ${it.name} acquired`); return save();
-    }
     case 'useItem': {
       const it = ITEMS[id]; if (player().inv[id] < 1) return;
       logAdd({ type: 'use', key: id, title: it.name }); sfx('level');

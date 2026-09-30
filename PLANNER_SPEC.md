@@ -8,6 +8,7 @@
 - `plans`: map date → the plans that have already been applied. A quest with `blocked: true` was pushed back by the hunter; `reason` says why, and it doesn't count for or against the day.
 - `notes`: map date → `{date, text}` — what the hunter wrote to the coach that day. **Read the last 3 days and act on it.**
 - `settings.standing`: permanent standing orders. Always obey them.
+- `settings.restDays`: rest weekdays (0=Sunday). `restDates`: map date → `{rest:true|false}` — a day marked in the calendar (holiday, day off, or a weekend he decided to work) **overrides** the weekday rule. On a rest day: at most 3 short quests, ≤45 minutes total, only repeating habits, anything due within 2 days and accepted side quests, and never a penalty.
 - `log` entries of `type: "focus"` hold real measured minutes (`minutes`, `taskId`) — use them so your `minutes` estimates are honest.
 
 **Today** = the current date in UTC+5, where the day starts at 04:00.

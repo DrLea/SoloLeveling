@@ -81,6 +81,14 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Shadows are spendable.** Every cleared task is a shadow; now you can call them: Double EXP (10), Extraction for 200 gold (15), Shadow Shield (25). Spending lowers the army, so it is a real choice.
 - Medals stay a permanent record and unlock the Dungeon Conqueror title.
 
+## v12
+- **Medals removed**; dungeon clears still count towards the Dungeon Conqueror title.
+- **No more buying system items with gold.** Skip tokens, shields and EXP potions are summoned with **mana**, which gathers +10 a day and +10 more for each cleared daily quest. Gold is only for your own rewards in the Shop.
+- **The army is immortal and weighted by rank** (E1 D2 C4 B7 A12 S20). Army power counts standing shadows; rank A and S shadows are listed separately as **Elite**.
+- **Shadows can fall.** Lose a day and one shadow falls per missed quest — chosen identically on every device. A fallen shadow is never deleted, only dimmed, and mana raises it again (rank × 3). Reviving 25 of them earns the **Dark Heart** title.
+- Every rank now has its own outline: dotted E, dashed D, solid C, double B, glowing A, pulsing S.
+- **Rest days in the calendar:** open any day in Record — past or future — and mark it as a rest day. Useful for holidays and leave; it overrides the weekday setting both ways.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 
