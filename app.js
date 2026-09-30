@@ -116,10 +116,9 @@ function isRestDay(d = today()) {
 }
 function toggleRestDate(d) {
   if (!db.restDates) db.restDates = {};
-  const byWeekday = (S().restDays || []).includes(weekday(d));
   const cur = isRestDay(d);
-  if (!cur === byWeekday) delete db.restDates[d];      // back to whatever the weekday says
-  else db.restDates[d] = touch({ date: d, rest: !cur });
+  // always store the decision — deleting the record would not survive a merge and the day would flip back
+  db.restDates[d] = touch({ date: d, rest: !cur });
   toast(!cur ? 'Marked as a rest day' : 'Back to a normal day');
   save();
 }
