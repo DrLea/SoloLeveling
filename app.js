@@ -243,7 +243,7 @@ function completeTask(t) {
   } else { t.done = true; t.doneAt = now(); }
   touch(t);
   sfx('done');
-  if (t.dungeon) popup({ cls: 'levelup', title: 'Dungeon Cleared', text: `「${esc(t.title)}」<br>Medal acquired.`, reward: `+${xp} XP · +${gold} G` });
+  if (t.dungeon) popup({ cls: 'levelup', title: 'Dungeon Cleared', text: `「${esc(t.title)}」`, reward: `+${xp} XP · +${gold} G` });
   else popup({ title: 'Quest Completed', text: esc(t.title), reward: `+${xp} XP · +${gold} G${t.reward?.text ? '<br>🎁 ' + esc(t.reward.text) : ''}` });
   afterProgress(before);
   save();
@@ -623,6 +623,104 @@ function addUrgentQuest(title) {
   plan.quests.push({ taskId: t.id, subId: null, xp: RANK_XP[t.rank], gold: Math.round(RANK_XP[t.rank] / 2), minutes: RANK_MIN[t.rank], note: 'added by you', added: true });
   touch(plan); sfx('tick'); toast('Added to today'); save();
 }
+// ---------- parties: a dungeon shared through a link-shared Drive folder
+const myMemberId = () => { let id = LS.get('ss_member', ''); if (!id) { id = uid(); LS.set('ss_member', id); } return id; };
+const partyCache = () => LS.get('ss_party_cache', {});
+const PARTY_PREFIX = '#party=';
+function partyLink(folderId) { return location.origin + location.pathname + PARTY_PREFIX + folderId; }
+
+async function createParty(t) {
+  if (!Drive.ready()) return toast('Connect Google Drive first');
+  try {
+    const root = await Drive.ensureFolder();
+    const folderId = await Drive.mkFolder('party-' + t.title.slice(0, 40).replace(/[^\w\s-]/g, '').trim(), root);
+    await Drive.shareAnyone(folderId);
+    await Drive.putIn(folderId, 'party.json', JSON.stringify({
+      title: t.title, steps: t.subtasks.map(x => x.title), url: t.url || '', deadline: t.deadline || '',
+      rank: t.rank, stat: t.stat, host: S().name, createdAt: new Date().toISOString()
+    }, null, 2));
+    t.party = { folderId }; touch(t);
+    await pushMember(t);
+    save();
+    const link = partyLink(folderId);
+    sharePartyLink(link, t.title);
+  } catch (e) { toast('Party failed: ' + e.message, 5000); }
+}
+function sharePartyLink(link, title) {
+  const data = { title: 'The System', text: `Join my dungeon: ${title}`, url: link };
+  if (navigator.share) navigator.share(data).catch(() => { });
+  else if (navigator.clipboard) navigator.clipboard.writeText(link).then(() => toast('Link copied — send it to your friend', 3500)).catch(() => prompt('Copy the link:', link));
+  else prompt('Copy the link:', link);
+}
+async function pushMember(t) {
+  if (!t.party?.folderId || !Drive.ready()) return;
+  const done = t.subtasks.filter(x => x.done).length;
+  await Drive.putIn(t.party.folderId, `member-${myMemberId()}.json`, JSON.stringify({
+    id: myMemberId(), name: S().name || 'Hunter', done, total: t.subtasks.length,
+    cleared: !!t.done, at: new Date().toISOString()
+  }));
+}
+async function pullParty(t) {
+  if (!t.party?.folderId || !Drive.ready()) return;
+  const files = await Drive.inFolder(t.party.folderId, 'member-');
+  const members = [];
+  for (const f of files) {
+    try { const m = JSON.parse(await Drive.readText(f)); if (m && m.id) members.push(m); } catch { }
+  }
+  const cache = partyCache(); cache[t.party.folderId] = { members, at: now() }; LS.set('ss_party_cache', cache);
+}
+async function syncParties() {
+  for (const t of liveTasks()) {
+    if (!t.party?.folderId) continue;
+    try { await pushMember(t); await pullParty(t); } catch (e) { console.warn('party', e); }
+  }
+}
+// opening a shared link
+async function joinParty(folderId) {
+  const existing = liveTasks().find(t => t.party?.folderId === folderId);
+  if (existing) { tab = 'tasks'; LS.set('ss_tab', tab); toast('You are already in this dungeon'); return render(); }
+  const files = await Drive.inFolder(folderId);
+  const pf = files.find(f => f.name === 'party.json');
+  if (!pf) throw new Error('this folder holds no dungeon (party.json is missing)');
+  const info = JSON.parse(await Drive.readText(pf));
+  const t = newTask(info.title || 'Shared dungeon', {
+    origin: 'party', dungeon: true, rank: RANKS.includes(info.rank) ? info.rank : 'B', stat: STATS[info.stat] ? info.stat : 'INT',
+    deadline: info.deadline || '', url: info.url || '', notes: info.host ? `Shared by ${info.host}` : '',
+    party: { folderId }
+  });
+  t.subtasks = (info.steps || []).map(x => ({ id: uid(), title: String(x), done: false }));
+  await pushMember(t); await pullParty(t);
+  tab = 'tasks'; LS.set('ss_tab', tab);
+  sfx('level'); popup({ cls: 'levelup', title: 'Party Joined', text: esc(info.title || ''), reward: info.host ? 'Host: ' + esc(info.host) : '' });
+  save();
+}
+let pendingParty = '';
+function readPartyHash() {
+  if (location.hash.startsWith(PARTY_PREFIX)) {
+    pendingParty = decodeURIComponent(location.hash.slice(PARTY_PREFIX.length));
+    history.replaceState(null, '', location.pathname);
+  }
+}
+async function handlePendingParty() {
+  if (!pendingParty) return;
+  const id = pendingParty;
+  if (!Drive.configured()) {
+    pendingParty = '';
+    return popup({
+      cls: 'fail', title: 'Google Drive required',
+      text: `This link opens a shared dungeon, and a shared dungeon lives in Google Drive.<br><br>Your app is in <b>local only</b> mode, so there is nothing to join with.<br><br>Open <b>System → Google Drive sync</b>, paste an OAuth Client ID and connect your account, then open the link again.`,
+      reward: 'Nothing was lost — your own tasks are untouched.'
+    });
+  }
+  if (!Drive.ready()) {   // configured but the token died — ask for a tap, keep the link
+    return popup({ cls: 'fail', title: 'Drive is not connected', text: 'Tap the ⟳ badge at the top to reconnect Google Drive, then this dungeon joins automatically.' });
+  }
+  pendingParty = '';
+  try { await joinParty(id); }
+  catch (e) {
+    popup({ cls: 'fail', title: 'Could not join', text: `${esc(e.message)}<br><br>Ask your friend to send the link again — they must press <b>Share</b> on the dungeon, and the folder has to stay shared with "anyone with the link".` });
+  }
+}
 // focus timer (optional — completing a quest never needs it). Pausable; survives app restarts.
 const Timer = {
   get() { return LS.get('ss_timer', null); },
@@ -909,12 +1007,12 @@ const Drive = {
     if (file.mimeType === 'application/vnd.google-apps.document') return (await this.api(`files/${file.id}/export?mimeType=text/plain`)).text();
     return (await this.api(`files/${file.id}?alt=media`)).text();
   },
-  async upsert(name, content, fileId) {
+  async upsert(name, content, fileId, parent) {
     if (fileId) {
       await this.api(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: content });
       return fileId;
     }
-    const folder = await this.ensureFolder(); const boundary = 'ss' + uid();
+    const folder = parent || await this.ensureFolder(); const boundary = 'ss' + uid();
     const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, parents: [folder], mimeType: 'application/json' })}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
     const r = await this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
     return (await r.json()).id;
@@ -925,6 +1023,24 @@ const Drive = {
     if (f[0]) { this.fileId = f[0].id; LS.set('ss_fileid', this.fileId); }
     else { this.fileId = null; LS.del('ss_fileid'); }
     return f[0] || null;
+  },
+  async mkFolder(name, parent) {
+    const r = await this.api('files', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parent] }) });
+    return (await r.json()).id;
+  },
+  async shareAnyone(fileId) {   // anyone holding the link can read and write their own progress file
+    await this.api(`files/${fileId}/permissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'writer', type: 'anyone' }) });
+  },
+  async inFolder(folderId, namePart = '') {
+    return this.q(`'${folderId}' in parents and trashed=false${namePart ? ` and name contains '${namePart}'` : ''}`);
+  },
+  async putIn(folderId, name, content) {
+    const ex = (await this.inFolder(folderId)).find(f => f.name === name);
+    if (ex) { await this.upsert(name, content, ex.id); return ex.id; }
+    const boundary = 'ss' + uid();
+    const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, parents: [folderId], mimeType: 'application/json' })}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+    const r = await this.api('files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary } , body });
+    return (await r.json()).id;
   },
   async whoami() { try { const r = await this.api('about?fields=user(emailAddress)'); const m = (await r.json())?.user?.emailAddress; if (m) LS.set('ss_email', m); } catch { } },
   async planFiles() { return this.q(`name contains 'ai-plan-' and trashed=false`); },
@@ -979,6 +1095,8 @@ async function sync(opts = {}) {
   finally { syncing = false; renderSoft(); }
   if (syncQueued) { syncQueued = false; scheduleSync(800); }
   if (syncedOnce) runDaily();
+  syncParties().then(() => { if (Object.keys(partyCache()).length) renderSoft(); });
+  handlePendingParty();
   maybeAutoPlan();
 }
 // last-chance flush when the app is closed or backgrounded
@@ -1101,6 +1219,7 @@ function enterApp() {
   $('#lock').classList.add('hidden'); $('#app').classList.remove('hidden');
   history.replaceState({ tab }, '');
   runDaily(); render(); Drive.scheduleRefresh(); maybeAutoPlan();
+  if (pendingParty && !Drive.configured()) setTimeout(handlePendingParty, 400);
 }
 function lockNow() { cryptoKey = null; apiKeyCache = null; IDB.del('key'); db = emptyDB(); $('#app').classList.add('hidden'); $('#lock').classList.remove('hidden'); renderLock(); }
 
@@ -1284,6 +1403,17 @@ function taskRow(t) {
     <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>
     ${open ? subList(t) : ''}</div>`;
 }
+function partyBoard(t) {
+  if (!t.party?.folderId) return '';
+  const c = partyCache()[t.party.folderId];
+  const members = (c?.members || []).slice().sort((a, b) => (b.done / Math.max(1, b.total)) - (a.done / Math.max(1, a.total)));
+  if (!members.length) return `<div class="party"><b>PARTY</b><p class="muted" style="font-size:13px;margin:4px 0 0">Waiting for someone to open your link. Only this dungeon and the progress on it are shared — nothing else from your System.</p></div>`;
+  return `<div class="party"><b>PARTY · ${members.length}</b>
+    ${members.map(m => { const pct = Math.round(m.done / Math.max(1, m.total) * 100); return `<div class="pm ${m.id === myMemberId() ? 'me' : ''}">
+      <span class="pname">${esc(m.name || 'Hunter')}${m.id === myMemberId() ? ' (you)' : ''}${m.cleared ? ' ✓' : ''}</span>
+      <div class="progress" style="margin:0"><div style="width:${pct}%"></div></div>
+      <span class="muted" style="font-size:12px">${m.done}/${m.total}</span></div>`; }).join('')}</div>`;
+}
 function dungeonCard(t) {
   const done = t.subtasks.filter(s => s.done).length, total = t.subtasks.length || 1;
   const pct = Math.round(done / total * 100);
@@ -1294,8 +1424,11 @@ function dungeonCard(t) {
       <button class="icon-btn" data-act="edit" data-id="${t.id}">✎</button></div>
     <div class="progress"><div style="width:${pct}%"></div></div>
     ${ui.openTasks.has(t.id) ? subList(t) : ''}
-    <div class="row" style="margin-top:8px"><button class="steps-btn ${ui.openTasks.has(t.id) ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}">${done}/${t.subtasks.length} steps <i>${ui.openTasks.has(t.id) ? '\u25be' : '\u25b8'}</i></button><span class="muted" style="font-size:13px">${ICON.dungeon} medal on clear</span><span class="grow"></span>
-    ${done >= t.subtasks.length && t.subtasks.length ? `<button class="btn small primary" data-act="toggle" data-id="${t.id}">Claim medal</button>` : ''}</div></div>`;
+    ${partyBoard(t)}
+    <div class="row" style="margin-top:8px"><button class="steps-btn ${ui.openTasks.has(t.id) ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}">${done}/${t.subtasks.length} steps <i>${ui.openTasks.has(t.id) ? '\u25be' : '\u25b8'}</i></button>
+      ${t.party ? `<button class="steps-btn on" data-act="partyLink" data-id="${t.id}" title="Send the link again">⇪ invite</button>` : `<button class="steps-btn" data-act="partyNew" data-id="${t.id}" title="Share this dungeon with friends">⇪ share</button>`}
+      <span class="grow"></span>
+    ${done >= t.subtasks.length && t.subtasks.length ? `<button class="btn small primary" data-act="toggle" data-id="${t.id}">Clear it</button>` : ''}</div></div>`;
 }
 function viewTasks() {
   const all = liveTasks();
@@ -1331,7 +1464,7 @@ function viewStatus(p) {
     <div class="player"><div class="lvl-big">${p.level}<small>LEVEL</small></div>
     <div class="kv"><b>Name</b><span>${esc(S().name)}</span><b>Rank</b><span>${p.hunter}-Rank Hunter${p.awakenings ? ` <span style="color:var(--purple)">✦${p.awakenings}</span>` : ''}</span><b>Title</b><span>${title ? esc(title.name) : '<span class="muted">none</span>'}</span><b>Streak</b><span>${p.streak} day${p.streak === 1 ? '' : 's'} (best ${p.bestStreak})</span><b>Gold</b><span style="color:var(--gold)">${p.gold} G</span>${p.awakenings ? `<b>Bonus</b><span style="color:var(--purple)">+${Math.round(p.awakenings * AWAKEN_BONUS * 100)}% EXP</span>` : ''}${p.potionActive ? `<b>Buff</b><span style="color:var(--green)">⚗ Double EXP today</span>` : ''}</div></div>
     <div class="section-title">EXP <span>${p.cur} / ${p.need}</span></div><div class="progress xp"><div style="width:${p.cur / p.need * 100}%"></div></div>
-    ${p.level >= AWAKEN_LEVEL ? `<div class="bonus-box" style="border-color:var(--purple);color:#d9c2ff">You have reached the limit of this body. <b>Awakening</b> resets your level to 1 but keeps every stat, medal, title and coin — and grants a permanent +${Math.round((p.awakenings + 1) * AWAKEN_BONUS * 100)}% EXP.<div style="margin-top:8px"><button class="btn small" data-act="awaken">✦ Awaken</button></div></div>` : `<p class="muted" style="font-size:13px;margin:6px 0 0">Awakening unlocks at level ${AWAKEN_LEVEL} — levels never cap.</p>`}
+    ${p.level >= AWAKEN_LEVEL ? `<div class="bonus-box" style="border-color:var(--purple);color:#d9c2ff">You have reached the limit of this body. <b>Awakening</b> resets your level to 1 but keeps every stat, title and coin — and grants a permanent +${Math.round((p.awakenings + 1) * AWAKEN_BONUS * 100)}% EXP.<div style="margin-top:8px"><button class="btn small" data-act="awaken">✦ Awaken</button></div></div>` : `<p class="muted" style="font-size:13px;margin:6px 0 0">Awakening unlocks at level ${AWAKEN_LEVEL} — levels never cap.</p>`}
     ${classCard(p)}
     <div class="section-title">STATS</div>`;
   const maxStat = Math.max(30, ...Object.values(p.stats));
@@ -1571,7 +1704,7 @@ function renderEdit() {
     <label>Stat</label><select id="eStat">${Object.entries(STATS).map(([k, v]) => `<option value="${k}" ${k === t.stat ? 'selected' : ''}>${k} — ${v} (${STAT_HINT[k]})</option>`).join('')}</select>
     <label>Type</label>
     <div class="chips"><button class="chip ${t.dungeon ? 'on' : ''}" data-m="dungeonToggle">${ICON.dungeon}Dungeon</button>
-      <span class="muted" style="font-size:13px">a project with a progress bar and a medal when cleared</span></div>
+      <span class="muted" style="font-size:13px">a project with its own progress bar — and it can be shared with friends</span></div>
 
     <label>Subtasks</label>
     <div id="eSubs">${t.subtasks.map((s, i) => `<div class="sub-row"><input type="checkbox" class="chk" data-m="subchk" data-i="${i}" ${s.done ? 'checked' : ''}><input type="text" data-m="subtxt" data-i="${i}" value="${esc(s.title)}" class="grow"><button class="icon-btn" data-m="subdel" data-i="${i}">✕</button></div>`).join('')}</div>
@@ -1685,6 +1818,12 @@ document.addEventListener('click', async e => {
       value: t.hint || '', ok: 'Save'
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
     case 'toToday': return toggleToday(t, b.dataset.sub || null);
+    case 'partyNew': {
+      if (!t.subtasks.length) return toast('Add a few steps first — those are what the party shares');
+      if (!confirmInline(b, 'Share?')) return;
+      return createParty(t);
+    }
+    case 'partyLink': return sharePartyLink(partyLink(t.party.folderId), t.title);
     case 'tgOpen': ui.openTasks.has(id) ? ui.openTasks.delete(id) : ui.openTasks.add(id); return render();
     case 'subToggle': { e.preventDefault(); const sub = t.subtasks.find(x => x.id === b.dataset.sub); if (sub) toggleSub(t, sub); return; }
     case 'tgDone': ui.showDone = !ui.showDone; return render();
@@ -1824,6 +1963,7 @@ window.addEventListener('popstate', e => {
 
 // ---------- boot
 (async function boot() {
+  readPartyHash();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
   const sec = LS.get('ss_security', null); if (sec) db.security = sec;
   if (await tryRememberedKey()) { enterApp(); if (Drive.ready()) sync(); return; }

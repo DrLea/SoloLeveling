@@ -26,7 +26,7 @@ Already has a Google account + Drive scope, so the marginal cost is scopes and A
 - Others as they prove useful (Tasks, Gmail for deadlines, Photos for proof of a side quest).
 Verified data also makes achievements real rather than self-reported.
 
-## 6. Party with friends (link-shared, still no backend)
+## 6. Party with friends — DONE in v15
 - Create a dungeon (e.g. "learn some technology"), press **share** → native share sheet on the phone, copy on desktop.
 - The link carries the id of a **link-shared Drive folder**; a friend who opens it joins the challenge.
 - Each member keeps their own state file in that folder; the app reads the others to show progress and a small party board.

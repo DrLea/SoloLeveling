@@ -96,6 +96,15 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Analytics** (Record → Analytics): when you actually work by hour, which ranks you drop, how long a task lives, planned minutes vs measured, EXP by week.
 - **Hunter license**: Status → "Export hunter license" saves a PNG card with level, rank, class, stats, army and titles.
 
+## v15 — party
+Any dungeon can be shared. Press **⇪ share** on its card: the app makes a folder inside `SoloSystem`, marks it "anyone with the link can edit", writes `party.json` (title, steps, link, deadline) into it, and opens the phone's share sheet (on desktop the link is copied).
+
+A friend opening the link gets the dungeon with the same steps and starts their own run of it. Each member writes only a small `member-<id>.json` — name, how many steps are done, when they last moved. **Nothing else is shared**: your other tasks, stats, notes and army stay private, because only this one folder is link-shared, not your database.
+
+The party board sits on the dungeon card and shows everyone's progress.
+
+**The friend needs Google Drive sync too.** Opening a link in local-only mode shows a clear explanation and the exact steps (System → Google Drive sync → Client ID → connect), and the link can simply be opened again afterwards.
+
 ## Backups
 The Friday task copies `SoloSystem/system-db.json` to `backup-system-db-<date>.json` in the same folder before it writes the review, and keeps the 8 newest copies (about 60 KB each today). The app ignores those files — it only ever reads `system-db.json`, `ai-plan-*` and `weekly-review-*`.
 
