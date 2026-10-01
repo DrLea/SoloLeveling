@@ -89,6 +89,20 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - Every rank now has its own outline: dotted E, dashed D, solid C, double B, glowing A, pulsing S.
 - **Rest days in the calendar:** open any day in Record — past or future — and mark it as a rest day. Useful for holidays and leave; it overrides the weekday setting both ways.
 
+## v14
+- **Opportunity dungeons.** The Friday task now also searches the web for real, currently open scholarships, hackathons, free certifications, grants and CFPs that fit you (free/funded only, remote or Germany or Uzbekistan, deadline inside 1-3 months, link verified). They appear in the review card under OPPORTUNITIES — **accept** turns one into a dungeon with the link, the steps and the real deadline, **✕** dismisses it. Whatever you don't take disappears with the next review.
+- Tasks can carry a **link** (field in the editor, "open ↗" chip on the row and on the dungeon card).
+- **Classes.** At level 10 you choose Shadow Assassin, Scholar of the Abyss or Berserker; each level after gives a **skill point**. Skills: Mana Flow (+3 mana/day), EXP Surge (+5% EXP), Shadow Bond (revive 20% cheaper), plus one class-only skill each. An Awakening refunds the points.
+- **Analytics** (Record → Analytics): when you actually work by hour, which ranks you drop, how long a task lives, planned minutes vs measured, EXP by week.
+- **Hunter license**: Status → "Export hunter license" saves a PNG card with level, rank, class, stats, army and titles.
+
+## Backups
+The Friday task copies `SoloSystem/system-db.json` to `backup-system-db-<date>.json` in the same folder before it writes the review, and keeps the 8 newest copies (about 60 KB each today). The app ignores those files — it only ever reads `system-db.json`, `ai-plan-*` and `weekly-review-*`.
+
+**To restore:** rename the current `system-db.json` to something else (e.g. `broken-system-db.json`), rename the backup you want to `system-db.json`, then in the app press ⟳ to sync. On the device that still holds the bad data, unlock and let it sync — the merge keeps whichever record is newer, so if the damage was a deletion it comes back; if the damage was a bad edit, clear that device's local copy first (System tab → Lock now, then reload) before syncing.
+
+There is also **Export JSON** in the System tab for a copy on disk at any time.
+
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
 

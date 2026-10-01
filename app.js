@@ -62,7 +62,22 @@ const ITEMS = {   // summoned with mana now, never bought with gold
 };
 const RANK_WEIGHT = { E: 1, D: 2, C: 4, B: 7, A: 12, S: 20 };   // how strong a shadow is
 const MANA_PER_DAY = 10, MANA_ON_CLEAR = 10;
-const reviveCost = rank => RANK_WEIGHT[rank] * 3;
+const CLASS_LEVEL = 10;   // a class is chosen here, and every level after gives a skill point
+const CLASSES = {
+  assassin: { name: 'Shadow Assassin', tag: 'speed', desc: '+20% EXP on quests of 30 minutes or less · skip tokens cost 5 less mana' },
+  scholar: { name: 'Scholar of the Abyss', tag: 'mind', desc: '+20% EXP on INT quests · every dungeon step gives +5 EXP' },
+  berserker: { name: 'Berserker', tag: 'body', desc: '+20% EXP on STR and VIT quests · half as many shadows fall on a lost day' }
+};
+const SKILLS = {
+  manaflow: { name: 'Mana Flow', cls: 'any', max: 3, desc: '+3 mana a day per rank' },
+  surge: { name: 'EXP Surge', cls: 'any', max: 3, desc: '+5% EXP per rank' },
+  bond: { name: 'Shadow Bond', cls: 'any', max: 3, desc: 'reviving costs 20% less per rank' },
+  swift: { name: 'Swift Hands', cls: 'assassin', max: 2, desc: '+10% EXP per rank on quests under 20 minutes' },
+  focus: { name: 'Deep Focus', cls: 'scholar', max: 2, desc: '+15% EXP per rank on quests of 60 minutes or more' },
+  endure: { name: 'Iron Will', cls: 'berserker', max: 2, desc: 'penalty rank drops by one per rank, minimum E' }
+};
+function skillRank(id) { return (S().skills || {})[id] || 0; }
+const reviveCost = rank => Math.max(1, Math.round(RANK_WEIGHT[rank] * 3 * (1 - 0.2 * skillRank('bond'))));
 const TITLES = [
   { id: 'awakened', name: 'The Awakened', desc: 'Reach level 2', test: p => p.level >= 2 },
   { id: 'wolf', name: 'Wolf Slayer', desc: 'Complete 10 tasks', test: p => p.doneCount >= 10 },
@@ -86,7 +101,7 @@ const HUNTER_RANKS = [[1, 'E'], [10, 'D'], [20, 'C'], [35, 'B'], [50, 'A'], [70,
 // ---------- DB
 const DEFAULT_SETTINGS = {
   name: 'Hunter', tz: 5, resetHour: 4, dailyMinutes: 180, maxQuests: 6, fallbackHour: 6,
-  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], updatedAt: 0
+  autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], cls: '', skills: {}, updatedAt: 0
 };
 function emptyDB() {
   return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
@@ -183,7 +198,7 @@ function newTask(title, extra = {}) {
   const t = {
     id: uid(), title: title.trim(), notes: '', done: false, doneAt: 0, createdAt: now(), updatedAt: now(), deleted: false,
     deadline: '', rank: 'E', stat: guessStat(title), subtasks: [], reward: { text: '', gold: 0 },
-    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, hint: '', ...extra
+    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, hint: '', url: '', ...extra
   };
   db.tasks[t.id] = t; return t;
 }
@@ -219,7 +234,7 @@ function completeTask(t) {
   const before = player();
   const q = questFor(t.id);
   const base = q?.xp || Math.round(RANK_XP[t.rank] * (t.pinDay === today() ? 1.2 : 1));
-  const xp = Math.round(base * before.xpMult);
+  const xp = Math.round(base * before.xpMult * questBonus(t, q?.minutes || RANK_MIN[t.rank]));
   const gold = Math.round((q?.gold ?? Math.round(base / 2)) * (before.potionActive ? 1 : 1)) + (+t.reward?.gold || 0);
   logAdd({ type: 'done', taskId: t.id, title: t.title, xp, gold, stat: t.stat, rank: t.rank, origin: t.origin, dungeon: !!t.dungeon });
   if (before.buffXp2) consumeBuff();
@@ -243,7 +258,9 @@ function toggleSub(t, s) {
   s.done = !s.done;
   if (s.done) {
     const q = questFor(t.id, s.id);
-    const xp = Math.round((q?.xp || 5) * before.xpMult), gold = q?.gold ?? 2;
+    let xp = Math.round((q?.xp || 5) * before.xpMult * questBonus(t, q?.minutes || 20));
+    if ((S().cls || '') === 'scholar' && t.dungeon) xp += 5;
+    const gold = q?.gold ?? 2;
     logAdd({ type: 'sub', taskId: t.id, subId: s.id, title: s.title, xp, gold, stat: t.stat });
     sfx('tick'); toast(`+${xp} XP · ${esc(s.title)}`);
   } else {
@@ -264,6 +281,16 @@ function afterProgress(before) {
 
 // ---------- player (derived from log → merge-safe)
 function levelFrom(xp) { let l = 1, need = 100, rest = xp; while (rest >= need) { rest -= need; l++; need = 100 + (l - 1) * 40; } return { level: l, cur: rest, need }; }
+// class and skill bonus for one specific quest
+function questBonus(t, minutes) {
+  const cls = S().cls || ''; let m = 1 + 0.05 * skillRank('surge');
+  if (cls === 'assassin' && minutes && minutes <= 30) m += 0.2;
+  if (cls === 'scholar' && t?.stat === 'INT') m += 0.2;
+  if (cls === 'berserker' && ['STR', 'VIT'].includes(t?.stat)) m += 0.2;
+  if (minutes && minutes < 20) m += 0.10 * skillRank('swift');
+  if (minutes && minutes >= 60) m += 0.15 * skillRank('focus');
+  return m;
+}
 function player() {
   let rawXp = 0, spentXp = 0, awakenings = 0, goldEarned = 0, goldSpent = 0, doneCount = 0, sClears = 0, penaltyClears = 0, dailyClears = 0;
   let manaEarned = 0, manaSpent = 0, revived = 0, dungeonClears = 0, buffXp2 = false;
@@ -306,6 +333,9 @@ function player() {
   const lv = levelFrom(xp);
   const stats = {}; for (const k in statXp) stats[k] = 10 + Math.floor(statXp[k] / 25);
   let hunter = 'E'; for (const [l, r] of HUNTER_RANKS) if (lv.level >= l) hunter = r;
+  const cls = S().cls || '';
+  const spent = Object.values(S().skills || {}).reduce((a, n) => a + n, 0);
+  const skillPoints = Math.max(0, (lv.level >= CLASS_LEVEL ? lv.level - CLASS_LEVEL + 1 : 0) - spent);
   // streak: consecutive days with ≥1 completion (a shielded day counts), ending today or yesterday
   const alive = d => byDay[d] || shieldDays.has(d) || isRestDay(d);   // rest days never break the streak
   let streak = 0, d = today(); if (!alive(d)) d = addDays(d, -1);
@@ -316,6 +346,10 @@ function player() {
     xp, totalXp: rawXp, ...lv, gold: goldEarned - goldSpent, goldEarned, stats, hunter, streak, bestStreak: best,
     doneCount, sClears, penaltyClears, dailyClears, dungeonClears, byDay, xpByDay, awakenings, shadows, inv, shieldDays,
     mana: Math.max(0, manaEarned - manaSpent), manaEarned, manaSpent, revived, buffXp2,
+    cls, skillPoints, spentPoints: spent,
+    manaPerDay: MANA_PER_DAY + 3 * skillRank('manaflow'),
+    reviveMult: Math.max(0.2, 1 - 0.2 * skillRank('bond')),
+    fallMult: cls === 'berserker' ? 0.5 : 1,
     fallenIds: fallen, reviveRefs, armyPower, fullPower,
     fallenShadows: shadows.filter(sh => sh.fallen), elites: shadows.filter(sh => sh.elite),
     potionActive: potionDay === today(),
@@ -324,8 +358,9 @@ function player() {
 }
 function summon(kind) {
   const it = SUMMONS[kind]; const p = player();
-  if (!it || p.mana < it.cost) return toast('Not enough mana');
-  logAdd({ type: 'arise', kind, mana: it.cost, title: `Arise: ${it.name}` });
+  const cost = Math.max(5, it.cost - (kind === 'skip' && (S().cls || '') === 'assassin' ? 5 : 0));
+  if (!it || p.mana < cost) return toast('Not enough mana');
+  logAdd({ type: 'arise', kind, mana: cost, title: `Arise: ${it.name}` });
   if (kind === 'skip') logAdd({ type: 'item', key: 'skip', cost: 0, title: 'Skip Token (summoned)' });
   if (kind === 'shield') logAdd({ type: 'item', key: 'shield', cost: 0, title: 'Shadow Shield (summoned)' });
   sfx('level');
@@ -355,9 +390,66 @@ function consumeBuff() {
   const e = Object.values(db.log).filter(x => !x.deleted && x.type === 'arise' && x.kind === 'xp2' && !x.used).sort((a, b) => a.at - b.at)[0];
   if (e) { e.used = true; touch(e); }
 }
+// hunter certificate — drawn on a canvas and saved as a PNG
+function certificate() {
+  const p = player(), s = S();
+  const W = 1080, H = 1350, c = document.createElement('canvas');
+  c.width = W; c.height = H; const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#061024'); g.addColorStop(1, '#03060f');
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+  x.strokeStyle = 'rgba(63,169,255,.18)'; x.lineWidth = 1;
+  for (let i = 0; i < W; i += 54) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, H); x.stroke(); }
+  for (let i = 0; i < H; i += 54) { x.beginPath(); x.moveTo(0, i); x.lineTo(W, i); x.stroke(); }
+  x.strokeStyle = '#2f8cff'; x.lineWidth = 3; x.shadowColor = '#2f8cff'; x.shadowBlur = 22;
+  x.strokeRect(40, 40, W - 80, H - 80); x.shadowBlur = 0;
+  const T = (txt, px, py, { size = 34, font = 'Rajdhani, sans-serif', color = '#d7ebff', align = 'left', weight = '600', glow = 0 } = {}) => {
+    x.font = `${weight} ${size}px ${font}`; x.fillStyle = color; x.textAlign = align;
+    if (glow) { x.shadowColor = color; x.shadowBlur = glow; }
+    x.fillText(txt, px, py); x.shadowBlur = 0;
+  };
+  T('THE SYSTEM', W / 2, 130, { size: 40, font: 'Orbitron, sans-serif', weight: '900', align: 'center', color: '#eaf5ff', glow: 24 });
+  T('HUNTER LICENSE', W / 2, 180, { size: 22, align: 'center', color: '#7f9bc2' });
+  T(s.name || 'Hunter', W / 2, 300, { size: 76, font: 'Orbitron, sans-serif', weight: '700', align: 'center', color: '#fff', glow: 18 });
+  const title = TITLES.find(t => t.id === s.title && t.test(p));
+  T(`${p.hunter}-RANK${p.awakenings ? ` · AWAKENED ×${p.awakenings}` : ''}${p.cls ? ' · ' + CLASSES[p.cls].name.toUpperCase() : ''}`, W / 2, 350, { size: 26, align: 'center', color: '#4fb6ff' });
+  if (title) T(`\u300c${title.name}\u300d`, W / 2, 396, { size: 26, align: 'center', color: '#ffcf5a' });
+  T(String(p.level), W / 2, 530, { size: 130, font: 'Orbitron, sans-serif', weight: '900', align: 'center', color: '#fff', glow: 26 });
+  T('LEVEL', W / 2, 570, { size: 20, align: 'center', color: '#7f9bc2' });
+  let y = 660;
+  for (const [k, v] of Object.entries(p.stats)) {
+    T(k, 110, y, { size: 26, font: 'Orbitron, sans-serif', weight: '700', color: '#4fb6ff' });
+    x.fillStyle = 'rgba(63,169,255,.14)'; x.fillRect(220, y - 20, 640, 14);
+    const w = Math.min(1, v / Math.max(30, ...Object.values(p.stats))) * 640;
+    const sg = x.createLinearGradient(220, 0, 220 + w, 0); sg.addColorStop(0, '#2f8cff'); sg.addColorStop(1, '#7fd4ff');
+    x.fillStyle = sg; x.fillRect(220, y - 20, w, 14);
+    T(String(v), 960, y, { size: 26, align: 'right' });
+    y += 54;
+  }
+  y += 20;
+  const facts = [
+    ['ARMY POWER', p.armyPower], ['SHADOWS RISEN', p.shadows.length],
+    ['TASKS CLEARED', p.doneCount], ['DUNGEONS', p.dungeonClears],
+    ['DAILY QUESTS', p.dailyClears], ['BEST STREAK', p.bestStreak + ' d']
+  ];
+  facts.forEach((f, i) => {
+    const px = 110 + (i % 3) * 290, py = y + Math.floor(i / 3) * 110;
+    T(String(f[1]), px, py + 44, { size: 44, font: 'Orbitron, sans-serif', weight: '700', color: '#eaf5ff' });
+    T(f[0], px, py + 74, { size: 18, color: '#7f9bc2' });
+  });
+  const unlocked = TITLES.filter(t => t.test(p)).slice(-4).map(t => t.name);
+  if (unlocked.length) { T('TITLES', 110, y + 260, { size: 18, color: '#7f9bc2' }); T(unlocked.join(' · '), 110, y + 300, { size: 24, color: '#d7ebff' }); }
+  T(new Date().toLocaleDateString(), W / 2, H - 80, { size: 22, align: 'center', color: '#7f9bc2' });
+  c.toBlob(bl => {
+    const u = URL.createObjectURL(bl), a = document.createElement('a');
+    a.href = u; a.download = `hunter-license-${today()}.png`; a.click();
+    setTimeout(() => URL.revokeObjectURL(u), 2000);
+  }, 'image/png');
+  sfx('level'); toast('Certificate saved as PNG');
+}
 function awaken() {
   const p = player(); if (p.level < AWAKEN_LEVEL) return;
   logAdd({ type: 'awaken', xpSpent: p.xp, level: p.level });
+  S().skills = {}; touch(S());   // level resets, so the skill points come back to be spent again
   sfx('level');
   popup({ cls: 'levelup', title: 'AWAKENING', text: `You have shed your limits.<br>Level reset to 1 — stats, gold and titles remain.`, reward: `Permanent EXP bonus: +${Math.round((p.awakenings + 1) * AWAKEN_BONUS * 100)}%` });
   save();
@@ -563,7 +655,13 @@ function applyReview(r) {
   if (db.reviews[r.date]) return false;
   db.reviews[r.date] = touch({
     date: r.date, weekOf: r.weekOf || '', summary: r.summary || '', wins: r.wins || [], slips: r.slips || [],
-    focus: r.focus || '', sideQuests: (r.sideQuests || []).map((q, i) => ({
+    focus: r.focus || '',
+    opportunities: (r.opportunities || []).map((o, i) => ({
+      ref: o.ref || 'o' + i, title: o.title || '', url: o.url || '', why: o.why || '', deadline: o.deadline || '',
+      cost: o.cost || '', place: o.place || '', rank: RANKS.includes(o.rank) ? o.rank : 'B', stat: STATS[o.stat] ? o.stat : 'INT',
+      subtasks: (o.subtasks || []).slice(0, 8).map(String), accepted: false, dismissed: false, taskId: ''
+    })),
+    sideQuests: (r.sideQuests || []).map((q, i) => ({
       ref: q.ref || 's' + i, title: q.title || '', why: q.why || '', rank: RANKS.includes(q.rank) ? q.rank : 'D',
       stat: STATS[q.stat] ? q.stat : 'VIT', gold: clamp(+q.gold || 60, 0, 400), minutes: +q.minutes || 60,
       accepted: false, taskId: ''
@@ -585,6 +683,22 @@ function acceptSideQuest(date, ref) {
   sq.accepted = true; sq.taskId = t.id; touch(r);
   sfx('tick'); toast('Side quest accepted'); save();
 }
+function acceptOpportunity(date, ref) {
+  const r = db.reviews[date]; const o = r?.opportunities.find(x => x.ref === ref); if (!o) return;
+  if (o.accepted && db.tasks[o.taskId]) { const t = db.tasks[o.taskId]; t.deleted = true; touch(t); o.accepted = false; o.taskId = ''; touch(r); toast('Dropped'); return save(); }
+  const t = newTask(o.title, {
+    origin: 'opportunity', rank: o.rank, stat: o.stat, deadline: o.deadline || '', url: o.url,
+    notes: [o.why, o.place, o.cost].filter(Boolean).join(' · '), dungeon: o.subtasks.length >= 3
+  });
+  t.subtasks = o.subtasks.map(x => ({ id: uid(), title: x, done: false }));
+  o.accepted = true; o.dismissed = false; o.taskId = t.id; touch(r);
+  sfx('level'); popup({ cls: 'levelup', title: 'Dungeon Opened', text: esc(o.title), reward: o.deadline ? 'Gate closes ' + esc(fmtDay(o.deadline)) : '' });
+  save();
+}
+function dismissOpportunity(date, ref) {
+  const r = db.reviews[date]; const o = r?.opportunities.find(x => x.ref === ref); if (!o) return;
+  o.dismissed = !o.dismissed; touch(r); save();
+}
 function latestReview() {
   const keys = Object.keys(db.reviews || {}).sort();
   const k = keys[keys.length - 1];
@@ -601,7 +715,7 @@ function seededPick(arr, n, seed) {
 function runDaily() {
   // mana gathers every day, once, whichever device opens first
   const manaId = 'mana-' + today();
-  if (!db.log[manaId]) { logAdd({ id: manaId, type: 'mana', amount: MANA_PER_DAY, title: 'Mana gathered' }); save({ noRender: true }); }
+  if (!db.log[manaId]) { logAdd({ id: manaId, type: 'mana', amount: player().manaPerDay, title: 'Mana gathered' }); save({ noRender: true }); }
   // Penalty for yesterday — issued only once across all devices:
   // the task carries a fixed id derived from the date, and with Drive on we wait for the
   // first successful sync so a phone opened on stale data can't invent a second one.
@@ -620,10 +734,13 @@ function runDaily() {
       // shadows fall when the day is lost — one per missed quest, chosen the same way on every device
       const p0 = player();
       const alive = p0.shadows.filter(sh => !sh.fallen).map(sh => sh.id);
-      const ids = seededPick(alive, Math.min(alive.length, st.total - st.done), y);
+      const lose = Math.max(1, Math.round((st.total - st.done) * p0.fallMult));
+      const ids = seededPick(alive, Math.min(alive.length, lose), y);
       if (ids.length) logAdd({ id: 'fall-' + y, type: 'fall', ids, title: `${ids.length} shadow${ids.length === 1 ? '' : 's'} fell` });
       const pen = yp.penalty || {};
-      newTask(pen.title || 'Penalty Quest: survive', { id: penId, origin: 'penalty', rank: RANKS.includes(pen.rank) ? pen.rank : 'C', stat: STATS[pen.stat] ? pen.stat : 'STR', deadline: today(), pinDay: today() });
+      const baseRank = RANKS.includes(pen.rank) ? pen.rank : 'C';
+      const softened = RANKS[Math.max(0, RANKS.indexOf(baseRank) - skillRank('endure'))];
+      newTask(pen.title || 'Penalty Quest: survive', { id: penId, origin: 'penalty', rank: softened, stat: STATS[pen.stat] ? pen.stat : 'STR', deadline: today(), pinDay: today() });
       setTimeout(() => { sfx('fail'); popup({ cls: 'fail', title: 'Penalty Zone', text: `Yesterday's daily quest was not completed (${st.done}/${st.total}).<br>A penalty quest has been issued.`, reward: esc(pen.title || '') }); }, 600);
     }
     save({ noRender: true });
@@ -1103,6 +1220,15 @@ function viewQuests(p) {
       ${rev.wins?.length ? `<div class="rev-list"><b>Cleared</b>${rev.wins.map(w => `<div>+ ${esc(w)}</div>`).join('')}</div>` : ''}
       ${rev.slips?.length ? `<div class="rev-list slip"><b>Slipped</b>${rev.slips.map(w => `<div>− ${esc(w)}</div>`).join('')}</div>` : ''}
       ${rev.focus ? `<div class="bonus-box">Focus for next week: ${esc(rev.focus)}</div>` : ''}
+      ${rev.opportunities?.length ? `<div class="section-title">OPPORTUNITIES <span>open a dungeon</span></div>
+        ${rev.opportunities.map(o => `<div class="opp ${o.accepted ? 'on' : ''} ${o.dismissed ? 'off' : ''}">
+          <div class="grow"><b>${esc(o.title)}</b>
+            ${o.why ? `<div class="muted" style="font-size:13px">${esc(o.why)}</div>` : ''}
+            <div class="opp-meta">${rankBadge(o.rank)}${o.deadline ? `<span class="${o.deadline <= addDays(today(), 7) ? 'over' : ''}">⌛ ${esc(fmtDay(o.deadline))}</span>` : ''}${o.cost ? `<span>${esc(o.cost)}</span>` : ''}${o.place ? `<span>${esc(o.place)}</span>` : ''}${o.subtasks.length ? `<span>${o.subtasks.length} steps</span>` : ''}
+              ${o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer" class="link-chip">open ↗</a>` : ''}</div></div>
+          <div class="opp-btns"><button class="btn small ${o.accepted ? '' : 'primary'}" data-act="opp" data-id="${rev.date}" data-sub="${o.ref}">${o.accepted ? 'drop' : 'accept'}</button>
+          ${o.accepted ? '' : `<button class="icon-btn" data-act="oppNo" data-id="${rev.date}" data-sub="${o.ref}" title="not interested">✕</button>`}</div>
+        </div>`).join('')}` : ''}
       ${rev.sideQuests?.length ? `<div class="section-title">SIDE QUESTS <span>for living</span></div>
         ${rev.sideQuests.map(q => `<div class="side ${q.accepted ? 'on' : ''}">
           <div class="grow"><b>${esc(q.title)}</b>${q.why ? `<div class="muted" style="font-size:13px">${esc(q.why)}</div>` : ''}
@@ -1145,6 +1271,7 @@ function taskRow(t) {
   if (t.origin === 'penalty') meta.push(`<span class="over">penalty</span>`);
   meta.push(`<span>${t.stat}</span>`);
   if (t.hint) meta.push(`<span class="hint-chip">${ICON.msg} ${esc(t.hint)}</span>`);
+  if (t.url) meta.push(`<a class="link-chip" href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">open ↗</a>`);
   const inToday = inQuests(t.id) || t.subtasks.some(x => inQuests(t.id, x.id));
   const open = ui.openTasks.has(t.id);
   return `<div class="task-wrap ${open ? 'open' : ''}"><div class="task ${t.done ? 'done' : ''}">
@@ -1162,7 +1289,8 @@ function dungeonCard(t) {
   const pct = Math.round(done / total * 100);
   return `<div class="dungeon ${t.rank}">
     <div class="row"><span class="rank ${t.rank}">${t.rank}</span><div class="grow"><b>${esc(t.title)}</b>
-      <div class="muted" style="font-size:13px">${done}/${t.subtasks.length} cleared${t.deadline ? ' · ⌛ ' + esc(fmtDay(t.deadline)) : ''}</div></div>
+      <div class="meta">${done}/${t.subtasks.length} cleared${t.deadline ? ` <span class="${t.deadline <= addDays(today(), 3) ? 'over' : ''}">⌛ ${esc(fmtDay(t.deadline))}</span>` : ''}
+      ${t.url ? `<a class="link-chip" href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : ''}${t.origin === 'opportunity' ? '<span>opportunity</span>' : ''}</div></div>
       <button class="icon-btn" data-act="edit" data-id="${t.id}">✎</button></div>
     <div class="progress"><div style="width:${pct}%"></div></div>
     ${ui.openTasks.has(t.id) ? subList(t) : ''}
@@ -1182,6 +1310,21 @@ function viewTasks() {
   if (done.length) { h += `<div class="section-title toggle" data-act="tgDone">COMPLETED <span>${done.length} ${ui.showDone ? '▾' : '▸'}</span></div>`; if (ui.showDone) h += done.slice(0, 60).map(taskRow).join(''); }
   return h;
 }
+function classCard(p) {
+  if (p.level < CLASS_LEVEL && !p.cls) return `<p class="muted" style="font-size:13px;margin:8px 0 0">A class can be chosen at level ${CLASS_LEVEL}.</p>`;
+  if (!p.cls) return `<div class="class-box"><b>CHOOSE YOUR CLASS</b><p class="muted" style="font-size:13px;margin:6px 0 10px">Permanent, but it only changes how your effort is rewarded.</p>
+    ${Object.entries(CLASSES).map(([k, c]) => `<div class="class-opt"><div class="grow"><b>${esc(c.name)}</b><div class="muted" style="font-size:13px">${esc(c.desc)}</div></div>
+      <button class="btn small primary" data-act="pickClass" data-id="${k}">choose</button></div>`).join('')}</div>`;
+  const c = CLASSES[p.cls];
+  const list = Object.entries(SKILLS).filter(([, sk]) => sk.cls === 'any' || sk.cls === p.cls);
+  return `<div class="class-box"><div class="row" style="justify-content:space-between"><b>${esc(c.name)}</b>
+      <span class="${p.skillPoints ? 'pts' : 'muted'}">${p.skillPoints} skill point${p.skillPoints === 1 ? '' : 's'}</span></div>
+    <p class="muted" style="font-size:13px;margin:4px 0 10px">${esc(c.desc)}</p>
+    ${list.map(([id, sk]) => { const r = skillRank(id); return `<div class="skill ${r ? 'on' : ''}">
+      <div class="grow"><b>${esc(sk.name)}</b> <span class="muted">${r}/${sk.max}</span><div class="muted" style="font-size:13px">${esc(sk.desc)}</div></div>
+      <button class="btn small ${p.skillPoints && r < sk.max ? 'primary' : ''}" data-act="learn" data-id="${id}" ${p.skillPoints && r < sk.max ? '' : 'disabled'}>+</button></div>`; }).join('')}
+  </div>`;
+}
 function viewStatus(p) {
   const title = TITLES.find(t => t.id === S().title && t.test(p));
   let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◉</span>STATUS</div><div class="sys-body">
@@ -1189,6 +1332,7 @@ function viewStatus(p) {
     <div class="kv"><b>Name</b><span>${esc(S().name)}</span><b>Rank</b><span>${p.hunter}-Rank Hunter${p.awakenings ? ` <span style="color:var(--purple)">✦${p.awakenings}</span>` : ''}</span><b>Title</b><span>${title ? esc(title.name) : '<span class="muted">none</span>'}</span><b>Streak</b><span>${p.streak} day${p.streak === 1 ? '' : 's'} (best ${p.bestStreak})</span><b>Gold</b><span style="color:var(--gold)">${p.gold} G</span>${p.awakenings ? `<b>Bonus</b><span style="color:var(--purple)">+${Math.round(p.awakenings * AWAKEN_BONUS * 100)}% EXP</span>` : ''}${p.potionActive ? `<b>Buff</b><span style="color:var(--green)">⚗ Double EXP today</span>` : ''}</div></div>
     <div class="section-title">EXP <span>${p.cur} / ${p.need}</span></div><div class="progress xp"><div style="width:${p.cur / p.need * 100}%"></div></div>
     ${p.level >= AWAKEN_LEVEL ? `<div class="bonus-box" style="border-color:var(--purple);color:#d9c2ff">You have reached the limit of this body. <b>Awakening</b> resets your level to 1 but keeps every stat, medal, title and coin — and grants a permanent +${Math.round((p.awakenings + 1) * AWAKEN_BONUS * 100)}% EXP.<div style="margin-top:8px"><button class="btn small" data-act="awaken">✦ Awaken</button></div></div>` : `<p class="muted" style="font-size:13px;margin:6px 0 0">Awakening unlocks at level ${AWAKEN_LEVEL} — levels never cap.</p>`}
+    ${classCard(p)}
     <div class="section-title">STATS</div>`;
   const maxStat = Math.max(30, ...Object.values(p.stats));
   for (const [k, v] of Object.entries(p.stats)) h += `<div class="stat" title="${esc(STAT_HINT[k])}"><span class="sn">${k}</span><div class="progress"><div style="width:${v / maxStat * 100}%"></div></div><span class="sv">${v}</span></div>`;
@@ -1198,6 +1342,7 @@ function viewStatus(p) {
   const mx = Math.max(1, ...days.map(d => p.byDay[d] || 0));
   h += `<div class="sys-window card"><div class="sys-head">LAST 7 DAYS</div><div class="sys-body"><div class="bars">${days.map(d => `<div class="b"><span>${p.byDay[d] || 0}</span><i style="height:${(p.byDay[d] || 0) / mx * 70}px"></i><span>${DAYS[weekday(d)]}</span></div>`).join('')}</div>
     <p class="muted" style="font-size:14px;margin:10px 0 0">Tasks cleared: <b>${p.doneCount}</b> · Daily quests cleared: <b>${p.dailyClears}</b> · Total EXP: <b>${p.xp}</b></p></div></div>`;
+  h += `<div class="row" style="justify-content:center;margin:4px 0 16px"><button class="btn" data-act="cert">⬓ Export hunter license</button></div>`;
   h += `<div class="sys-window card"><div class="sys-head">TITLES</div><div class="sys-body"><div class="titles">${TITLES.map(t => { const ok = t.test(p); return `<button class="title-badge ${ok ? '' : 'locked'} ${S().title === t.id && ok ? 'eq' : ''}" data-act="equip" data-id="${t.id}" ${ok ? '' : 'disabled'}>${esc(t.name)}<small>${esc(t.desc)}</small></button>`; }).join('')}</div></div></div>`;
   // shadow army — an immortal record; fallen shadows only dim until mana raises them
   const byRank = {}; p.shadows.forEach(sh => byRank[sh.rank] = (byRank[sh.rank] || 0) + 1);
@@ -1228,7 +1373,82 @@ function viewStatus(p) {
   </div></div>`;
   return h;
 }
+function analytics(p) {
+  const d = today(), tz = S().tz;
+  const done = Object.values(db.log).filter(e => !e.deleted && (e.type === 'done' || e.type === 'sub'));
+  // 1. when the work actually happens — 2-hour buckets in his own timezone
+  const hours = new Array(12).fill(0);
+  done.forEach(e => { const h = new Date(e.at + tz * 3600e3).getUTCHours(); hours[Math.floor(h / 2)]++; });
+  // 2. quests cleared vs missed, by rank
+  const byRank = {}; RANKS.forEach(r => byRank[r] = { done: 0, missed: 0 });
+  for (const [date, plan] of Object.entries(db.plans)) {
+    if (date > d) continue;
+    for (const q of plan.quests || []) {
+      if (q.blocked || q.skipped) continue;
+      const t = db.tasks[q.taskId]; if (!t) continue;
+      const row = byRank[t.rank] || byRank.E;
+      if (questDone(q, date)) row.done++; else if (date < d) row.missed++;
+    }
+  }
+  // 3. how long a task lives from creation to completion
+  const lives = [];
+  for (const e of done) { if (e.type !== 'done') continue; const t = db.tasks[e.taskId]; if (!t || !t.createdAt) continue; lives.push(Math.max(0, (e.at - t.createdAt) / 864e5)); }
+  lives.sort((a, b) => a - b);
+  const median = lives.length ? lives[Math.floor(lives.length / 2)] : 0;
+  const oldest = liveTasks().filter(isActive).sort((a, b) => a.createdAt - b.createdAt)[0];
+  // 4. estimate vs measured minutes
+  let est = 0, act = 0;
+  for (const e of Object.values(db.log)) {
+    if (e.deleted || e.type !== 'focus') continue;
+    act += +e.minutes || 0;
+    const q = (db.plans[e.day]?.quests || []).find(x => x.taskId === e.taskId);
+    est += q ? (+q.minutes || 0) : 0;
+  }
+  // 5. EXP by week, last 8
+  const weeks = [];
+  for (let w = 7; w >= 0; w--) {
+    let xp = 0, label = '';
+    for (let i = 0; i < 7; i++) { const k = addDays(d, -(w * 7 + i)); xp += p.xpByDay[k] || 0; if (i === 6) label = k.slice(5); }
+    weeks.push({ xp, label });
+  }
+  return { hours, byRank, median, oldest, est, act, weeks, total: done.length };
+}
+function bars(items, opts = {}) {
+  const max = Math.max(1, ...items.map(i => i.v));
+  return `<div class="bars2 ${opts.cls || ''}">${items.map(i => `<div class="b2" title="${esc(i.label)}: ${i.v}${opts.unit || ''}">
+    <i style="height:${Math.max(2, i.v / max * 72)}px${i.color ? ';background:' + i.color : ''}"></i>
+    <span class="bv">${i.v ? i.v + (opts.unit || '') : ''}</span><span class="bl">${esc(i.label)}</span></div>`).join('')}</div>`;
+}
+function viewAnalytics(p) {
+  const a = analytics(p);
+  const hourLabels = a.hours.map((v, i) => ({ label: String(i * 2).padStart(2, '0'), v }));
+  const best = a.hours.indexOf(Math.max(...a.hours));
+  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◴</span>WHEN YOU ACTUALLY WORK</div><div class="sys-body">
+    ${bars(hourLabels)}
+    <p class="muted" style="font-size:14px;margin:10px 0 0">${a.total ? `Strongest stretch: <b style="color:var(--accent)">${String(best * 2).padStart(2, '0')}:00–${String(best * 2 + 2).padStart(2, '0')}:00</b>. Quests and subtasks counted: ${a.total}.` : 'Nothing recorded yet.'}</p></div></div>`;
+
+  const rows = RANKS.map(r => ({ r, ...a.byRank[r] })).filter(x => x.done + x.missed > 0);
+  h += `<div class="sys-window card"><div class="sys-head">WHICH RANKS YOU DROP</div><div class="sys-body">`;
+  h += rows.length ? `<div class="legend"><span><i style="background:var(--green)"></i>cleared</span><span><i style="background:var(--red)"></i>missed</span></div>
+    ${rows.map(x => { const tot = x.done + x.missed, pct = Math.round(x.done / tot * 100); return `<div class="rank-row"><span class="rank ${x.r}">${x.r}</span>
+      <div class="split"><i class="ok" style="width:${pct}%"></i><i class="bad" style="width:${100 - pct}%"></i></div>
+      <span class="rank-pct ${pct < 50 ? 'low' : ''}">${pct}%</span><span class="muted" style="font-size:12px">${x.done}/${tot}</span></div>`; }).join('')}`
+    : `<div class="empty">No finished daily quests yet.</div>`;
+  h += `</div></div>`;
+
+  h += `<div class="sys-window card"><div class="sys-head">HOW LONG A TASK LIVES</div><div class="sys-body">
+    <div class="army-top"><div><div class="army-num">${a.median.toFixed(1)}</div><small>DAYS — TYPICAL</small></div>
+      <div><div class="army-num ${a.act && a.est && a.act > a.est * 1.25 ? 'mana' : ''}">${a.est ? Math.round(a.act / a.est * 100) : '—'}${a.est ? '%' : ''}</div><small>MEASURED vs ESTIMATE</small></div></div>
+    <p class="muted" style="font-size:14px;margin:12px 0 0">${a.est ? `The System planned ${a.est} min, the timer recorded ${a.act} min.` : 'Use the ▶ timer on a quest and this becomes real.'}
+      ${a.oldest ? `<br>Oldest open task: <b>${esc(a.oldest.title)}</b> — ${Math.round((now() - a.oldest.createdAt) / 864e5)} days.` : ''}</p></div></div>`;
+
+  h += `<div class="sys-window card"><div class="sys-head">EXP BY WEEK</div><div class="sys-body">${bars(a.weeks.map(w => ({ label: w.label, v: w.xp })))}</div></div>`;
+  return h;
+}
 function viewLog(p) {
+  const sub = ui.logSub || 'cal';
+  let head = `<div class="chips" style="margin-bottom:12px"><button class="chip ${sub === 'cal' ? 'on' : ''}" data-act="logSub" data-id="cal">Calendar</button><button class="chip ${sub === 'an' ? 'on' : ''}" data-act="logSub" data-id="an">Analytics</button></div>`;
+  if (sub === 'an') return head + viewAnalytics(p);
   const month = ui.calMonth || today().slice(0, 7);
   const first = month + '-01', firstW = (new Date(first + 'T00:00:00Z').getUTCDay() + 6) % 7; // week starts Monday
   const daysIn = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).getUTCDate();
@@ -1238,7 +1458,7 @@ function viewLog(p) {
   const maxXp = Math.max(60, ...Object.values(p.xpByDay));
   const [y, m] = [+month.slice(0, 4), +month.slice(5, 7)];
   const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7), next = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7);
-  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">▦</span>RECORD</div><div class="sys-body">
+  let h = head + `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">▦</span>RECORD</div><div class="sys-body">
     <div class="row" style="justify-content:space-between;margin-bottom:10px"><button class="icon-btn" data-act="cal" data-id="${prev}">‹</button>
       <b style="font-family:Orbitron;letter-spacing:.1em">${MONTHS[m - 1]} ${y}</b>
       <button class="icon-btn" data-act="cal" data-id="${next}">›</button></div>
@@ -1343,6 +1563,7 @@ function renderEdit() {
   $('#modalBox').innerHTML = `<div class="sys-head"><span class="sys-icon">✎</span>EDIT QUEST<button class="icon-btn" style="margin-left:auto" data-m="close">✕</button></div><div class="sys-body">
     <label>Title</label><input id="eTitle" value="${esc(t.title)}">
     <label>Notes (for you)</label><textarea id="eNotes">${esc(t.notes)}</textarea>
+    <label>Link</label><input id="eUrl" type="url" placeholder="https://…" value="${esc(t.url || '')}">
     <label>${ICON.msg} Message to the System (read when it splits &amp; schedules this)</label>
     <textarea id="eHint" rows="2" placeholder="e.g. split by chapters · only evenings · needs the lab PC · do the boring part first">${esc(t.hint || '')}</textarea>
     <div class="grid2"><div><label>Deadline</label><input id="eDeadline" type="date" value="${esc(t.deadline)}"></div>
@@ -1370,6 +1591,7 @@ function readEditFields() {
   t.title = $('#eTitle').value.trim() || t.title; t.notes = $('#eNotes').value; t.deadline = $('#eDeadline').value;
   t.rank = $('#eRank').value; t.stat = $('#eStat').value; t.reward = { text: $('#eReward').value.trim(), gold: +$('#eGold').value || 0 };
   if ($('#eHint')) t.hint = $('#eHint').value.trim().slice(0, 500);
+  if ($('#eUrl')) { const u = $('#eUrl').value.trim(); t.url = /^https?:\/\//i.test(u) ? u : ''; }
   t.repeat.type = $('#eRepeat').value; if ($('#eEvery')) t.repeat.every = Math.max(1, +$('#eEvery').value || 1);
   $$('[data-m=subtxt]').forEach(el => { const s = t.subtasks[+el.dataset.i]; if (s) s.title = el.value; });
 }
@@ -1499,10 +1721,27 @@ document.addEventListener('click', async e => {
     case 'reviveAll': if (!confirmInline(b, 'Arise all?')) return; return reviveAll();
     case 'restDate': return toggleRestDate(id);
     case 'side': return acceptSideQuest(id, b.dataset.sub);
+    case 'opp': return acceptOpportunity(id, b.dataset.sub);
+    case 'oppNo': return dismissOpportunity(id, b.dataset.sub);
     case 'restDay': { const ds = new Set(S().restDays || []); const n = +id; ds.has(n) ? ds.delete(n) : ds.add(n); S().restDays = [...ds].sort(); touch(S()); return save(); }
+    case 'pickClass': {
+      if (S().cls) return;
+      if (!confirmInline(b, 'Sure?')) return;
+      S().cls = id; touch(S()); sfx('level');
+      popup({ cls: 'levelup', title: 'Class Acquired', text: esc(CLASSES[id].name), reward: esc(CLASSES[id].desc) });
+      return save();
+    }
+    case 'learn': {
+      const sk = SKILLS[id]; const p2 = player();
+      if (!sk || !p2.skillPoints || skillRank(id) >= sk.max) return;
+      S().skills = { ...(S().skills || {}), [id]: skillRank(id) + 1 }; touch(S());
+      sfx('tick'); toast(`${sk.name} ${skillRank(id)}/${sk.max}`); return save();
+    }
+    case 'cert': return certificate();
     case 'awaken': if (!confirmInline(b, 'Tap again to Awaken')) return; return awaken();
     case 'tgShadows': ui.allShadows = !ui.allShadows; return render();
     case 'cal': ui.calMonth = id; return render();
+    case 'logSub': ui.logSub = id; return render();
     case 'calday': ui.calDay = ui.calDay === id ? '' : id; return render();
     case 'useItem': {
       const it = ITEMS[id]; if (player().inv[id] < 1) return;

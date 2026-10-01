@@ -50,6 +50,10 @@ Same `system-db.json`. Look at the last 7 days: `log` (done/sub/bonus/focus by `
  "focus":"one sentence: the single thing next week turns on",
  "sideQuests":[{"ref":"sq1","title":"Volleyball with friends on Saturday evening","why":"one line grounded in his week","rank":"D","stat":"STR","gold":80,"minutes":120}]}
 ```
+## Opportunities (same file)
+`"opportunities":[{"ref","title","url","why","deadline","cost","place","rank","stat","subtasks":[...]}]`
+Real and verified only: free, funded or paid-to-participate; remote, Germany or Uzbekistan; deadline inside 1-3 months; the page opened and checked. Accepting one in the app creates a dungeon with the link, the steps and the deadline; dismissed and untouched ones vanish with the next review. Don't repeat anything already in an earlier review's `opportunities`.
+
 ## Rules for side quests
 - 3-4 of them, for **living**, not productivity: sport with other people, being outdoors, something with friends or family, hands-on or cultural, something restful. Never work, study or chores.
 - Invent them yourself from what the week looked like: long screen streaks → get outside; no social entries → something with people; heavy training week → something calm.

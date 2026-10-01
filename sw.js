@@ -1,6 +1,6 @@
 // App-shell cache. Bump VERSION *and* the ?v= numbers in index.html when you deploy changes.
-const VERSION = 'system-v13';
-const SHELL = ['./', 'index.html', 'style.css?v=13', 'app.js?v=13', 'config.js?v=13', 'manifest.json', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
+const VERSION = 'system-v14';
+const SHELL = ['./', 'index.html', 'style.css?v=14', 'app.js?v=14', 'config.js?v=14', 'manifest.json', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 
 self.addEventListener('install', e => {
   // cache: 'reload' skips the browser HTTP cache, so a deploy is never stored stale
