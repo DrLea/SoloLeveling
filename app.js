@@ -110,7 +110,7 @@ let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
 let apiKeyCache = null;         // decrypted Anthropic key (memory only)
 let tab = LS.get('ss_tab', 'quests');
-let ui = { showDone: false, showSched: false, openTasks: new Set() };
+let ui = { showDone: false, showSched: false, openTasks: new Set(), panels: new Set() };
 
 function S() { return db.settings; }
 function touch(o) { o.updatedAt = now(); return o; }
@@ -519,8 +519,13 @@ function applyPlan(p, source) {
     if (t.nextDay && t.nextDay > p.date) { t.nextDay = ''; touch(t); }
     quests.push({ taskId, subId, xp: clamp(+q.xp || RANK_XP[t.rank], 5, 400), gold: clamp(+q.gold || Math.round(RANK_XP[t.rank] / 2), 0, 300), minutes: +q.minutes || RANK_MIN[t.rank], note: q.note || '' });
   }
+  const paid = (p.paidOpportunities || []).map((o, i) => ({
+    ref: o.ref || 'p' + i, title: o.title || '', url: o.url || '', why: o.why || '', company: o.company || '',
+    pay: o.pay || '', place: o.place || '', kind: o.kind || 'job', deadline: o.deadline || '',
+    subtasks: (o.subtasks || []).slice(0, 8).map(String), accepted: false, dismissed: false, taskId: ''
+  }));
   db.plans[p.date] = touch({
-    date: p.date, source: source || p.source || 'ai', title: p.title || 'Daily Quest', message: p.message || '',
+    date: p.date, source: source || p.source || 'ai', title: p.title || 'Daily Quest', message: p.message || '', paid,
     quests, bonus: p.bonus || { text: '', xp: 50, gold: 30 }, penalty: p.penalty || { title: 'Penalty Quest: 100 push-ups, no excuses', rank: 'C', stat: 'STR' },
     bonusClaimed: false, penaltyApplied: false, generatedAt: p.generatedAt || new Date().toISOString(), appliedAt: now()
   });
@@ -781,6 +786,24 @@ function acceptSideQuest(date, ref) {
   sq.accepted = true; sq.taskId = t.id; touch(r);
   sfx('tick'); toast('Side quest accepted'); save();
 }
+function acceptPaid(date, ref) {
+  const plan = db.plans[date]; const o = plan?.paid?.find(x => x.ref === ref); if (!o) return;
+  if (o.accepted && db.tasks[o.taskId]) { const t = db.tasks[o.taskId]; t.deleted = true; touch(t); o.accepted = false; o.taskId = ''; touch(plan); toast('Dropped'); return save(); }
+  const steps = o.subtasks.length ? o.subtasks
+    : ['Read the posting properly', 'Tailor the CV for it', 'Write the message', 'Send the application', 'Follow up in a week'];
+  const t = newTask(o.title + (o.company ? ' — ' + o.company : ''), {
+    origin: 'job', rank: 'C', stat: 'PER', dungeon: true, url: o.url, deadline: o.deadline || '',
+    notes: [o.why, o.pay, o.place, o.kind].filter(Boolean).join(' · ')
+  });
+  t.subtasks = steps.map(x => ({ id: uid(), title: x, done: false }));
+  o.accepted = true; o.dismissed = false; o.taskId = t.id; touch(plan);
+  sfx('level'); popup({ title: 'Application Opened', text: esc(o.title), reward: o.pay ? esc(o.pay) : '' });
+  save();
+}
+function dismissPaid(date, ref) {
+  const plan = db.plans[date]; const o = plan?.paid?.find(x => x.ref === ref); if (!o) return;
+  o.dismissed = !o.dismissed; touch(plan); save();
+}
 function acceptOpportunity(date, ref) {
   const r = db.reviews[date]; const o = r?.opportunities.find(x => x.ref === ref); if (!o) return;
   if (o.accepted && db.tasks[o.taskId]) { const t = db.tasks[o.taskId]; t.deleted = true; touch(t); o.accepted = false; o.taskId = ''; touch(r); toast('Dropped'); return save(); }
@@ -1039,7 +1062,7 @@ const Drive = {
     if (ex) { await this.upsert(name, content, ex.id); return ex.id; }
     const boundary = 'ss' + uid();
     const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, parents: [folderId], mimeType: 'application/json' })}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-    const r = await this.api('files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary } , body });
+    const r = await this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
     return (await r.json()).id;
   },
   async whoami() { try { const r = await this.api('about?fields=user(emailAddress)'); const m = (await r.json())?.user?.emailAddress; if (m) LS.set('ss_email', m); } catch { } },
@@ -1281,6 +1304,13 @@ function renderSync() {
   if (dirty()) { b.innerHTML = '<span class="spin">⟳</span> saving'; return; }
   b.textContent = '✓ ' + (lastSync ? new Date(lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'ready'); b.classList.add('ok');
 }
+function panel(id, title, count, body, icon) {
+  const open = ui.panels.has(id);
+  return `<div class="sys-window card"><button class="sys-head panel-head" data-act="panel" data-id="${id}">
+      ${icon ? `<span class="sys-icon">${icon}</span>` : ''}${esc(title)}<span class="grow"></span>
+      ${count != null ? `<span class="pcount">${count}</span>` : ''}<i>${open ? '\u25be' : '\u25b8'}</i></button>
+    ${open ? `<div class="sys-body">${body}</div>` : ''}</div>`;
+}
 function rankBadge(r) { return `<span class="rank ${r}">${r}</span>`; }
 function countdown() { const ms = dayEndTs(today()) - now(); const h = Math.floor(ms / 3600e3), m = Math.floor(ms % 3600e3 / 60e3), s = Math.floor(ms % 60e3 / 1e3); return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
 
@@ -1331,30 +1361,44 @@ function viewQuests(p) {
   h += `<div class="add-row" style="margin-top:14px"><input id="quickQuest" placeholder="Something urgent came up…" enterkeyhint="done" autocomplete="off"><button class="btn primary" data-act="addQuest">+</button></div>
     <p class="muted" style="font-size:12px;margin:6px 0 0">Added here it becomes a quest for today and lands in Tasks.</p>`;
   h += `</div></div>`;
-  // weekly review + side quests
+  // paid work — refreshed by the 4 AM task, collapsed until you want it
+  const paidList = (plan?.paid || []).filter(o => !o.dismissed);
+  if (paidList.length) {
+    h += panel('paid', 'PAID OPPORTUNITIES', paidList.filter(o => !o.accepted).length || '✓',
+      paidList.map(o => `<div class="opp ${o.accepted ? 'on' : ''}">
+        <div class="grow"><b>${esc(o.title)}</b>${o.company ? ` <span class="muted">— ${esc(o.company)}</span>` : ''}
+          ${o.why ? `<div class="muted" style="font-size:13px">${esc(o.why)}</div>` : ''}
+          <div class="opp-meta"><span class="kind-${esc(o.kind)}">${esc(o.kind)}</span>${o.pay ? `<span class="pay">${esc(o.pay)}</span>` : ''}${o.place ? `<span>${esc(o.place)}</span>` : ''}${o.deadline ? `<span class="${o.deadline <= addDays(today(), 3) ? 'over' : ''}">⌛ ${esc(fmtDay(o.deadline))}</span>` : ''}
+            ${o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer" class="link-chip">open ↗</a>` : ''}</div></div>
+        <div class="opp-btns"><button class="btn small ${o.accepted ? '' : 'primary'}" data-act="paid" data-id="${d}" data-sub="${o.ref}">${o.accepted ? 'drop' : 'apply'}</button>
+        ${o.accepted ? '' : `<button class="icon-btn" data-act="paidNo" data-id="${d}" data-sub="${o.ref}" title="not interested">✕</button>`}</div>
+      </div>`).join(''), '$');
+  }
+  // weekly review, opportunities and side quests — three collapsed panels
   const rev = latestReview();
   if (rev) {
-    h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u2691</span>WEEKLY REVIEW <span style="margin-left:auto;font-size:12px;color:var(--muted)">${esc(fmtDay(rev.date))}</span></div><div class="sys-body">
+    h += panel('review', 'WEEKLY REVIEW', null, `
       ${rev.summary ? `<div class="sys-msg">${esc(rev.summary)}</div>` : ''}
       ${rev.wins?.length ? `<div class="rev-list"><b>Cleared</b>${rev.wins.map(w => `<div>+ ${esc(w)}</div>`).join('')}</div>` : ''}
       ${rev.slips?.length ? `<div class="rev-list slip"><b>Slipped</b>${rev.slips.map(w => `<div>− ${esc(w)}</div>`).join('')}</div>` : ''}
       ${rev.focus ? `<div class="bonus-box">Focus for next week: ${esc(rev.focus)}</div>` : ''}
-      ${rev.opportunities?.length ? `<div class="section-title">OPPORTUNITIES <span>open a dungeon</span></div>
-        ${rev.opportunities.map(o => `<div class="opp ${o.accepted ? 'on' : ''} ${o.dismissed ? 'off' : ''}">
-          <div class="grow"><b>${esc(o.title)}</b>
-            ${o.why ? `<div class="muted" style="font-size:13px">${esc(o.why)}</div>` : ''}
-            <div class="opp-meta">${rankBadge(o.rank)}${o.deadline ? `<span class="${o.deadline <= addDays(today(), 7) ? 'over' : ''}">⌛ ${esc(fmtDay(o.deadline))}</span>` : ''}${o.cost ? `<span>${esc(o.cost)}</span>` : ''}${o.place ? `<span>${esc(o.place)}</span>` : ''}${o.subtasks.length ? `<span>${o.subtasks.length} steps</span>` : ''}
-              ${o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer" class="link-chip">open ↗</a>` : ''}</div></div>
-          <div class="opp-btns"><button class="btn small ${o.accepted ? '' : 'primary'}" data-act="opp" data-id="${rev.date}" data-sub="${o.ref}">${o.accepted ? 'drop' : 'accept'}</button>
-          ${o.accepted ? '' : `<button class="icon-btn" data-act="oppNo" data-id="${rev.date}" data-sub="${o.ref}" title="not interested">✕</button>`}</div>
-        </div>`).join('')}` : ''}
-      ${rev.sideQuests?.length ? `<div class="section-title">SIDE QUESTS <span>for living</span></div>
-        ${rev.sideQuests.map(q => `<div class="side ${q.accepted ? 'on' : ''}">
-          <div class="grow"><b>${esc(q.title)}</b>${q.why ? `<div class="muted" style="font-size:13px">${esc(q.why)}</div>` : ''}
-            <div class="muted" style="font-size:12px">${q.minutes} min · +${q.gold} G · ${q.stat}</div></div>
-          <button class="btn small ${q.accepted ? '' : 'primary'}" data-act="side" data-id="${rev.date}" data-sub="${q.ref}">${q.accepted ? 'drop' : 'accept'}</button>
-        </div>`).join('')}` : ''}
-    </div></div>`;
+      <p class="muted" style="font-size:12px;margin:10px 0 0">${esc(fmtDay(rev.date))}</p>`, '⚑');
+    const opps = (rev.opportunities || []).filter(o => !o.dismissed);
+    if (opps.length) h += panel('opps', 'OPPORTUNITIES', opps.filter(o => !o.accepted).length || '✓',
+      opps.map(o => `<div class="opp ${o.accepted ? 'on' : ''}">
+        <div class="grow"><b>${esc(o.title)}</b>
+          ${o.why ? `<div class="muted" style="font-size:13px">${esc(o.why)}</div>` : ''}
+          <div class="opp-meta">${rankBadge(o.rank)}${o.deadline ? `<span class="${o.deadline <= addDays(today(), 7) ? 'over' : ''}">⌛ ${esc(fmtDay(o.deadline))}</span>` : ''}${o.cost ? `<span>${esc(o.cost)}</span>` : ''}${o.place ? `<span>${esc(o.place)}</span>` : ''}${o.subtasks.length ? `<span>${o.subtasks.length} steps</span>` : ''}
+            ${o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer" class="link-chip">open ↗</a>` : ''}</div></div>
+        <div class="opp-btns"><button class="btn small ${o.accepted ? '' : 'primary'}" data-act="opp" data-id="${rev.date}" data-sub="${o.ref}">${o.accepted ? 'drop' : 'accept'}</button>
+        ${o.accepted ? '' : `<button class="icon-btn" data-act="oppNo" data-id="${rev.date}" data-sub="${o.ref}" title="not interested">✕</button>`}</div>
+      </div>`).join(''), '◈');
+    if (rev.sideQuests?.length) h += panel('side', 'SIDE QUESTS', rev.sideQuests.filter(q => !q.accepted).length || '✓',
+      rev.sideQuests.map(q => `<div class="side ${q.accepted ? 'on' : ''}">
+        <div class="grow"><b>${esc(q.title)}</b>${q.why ? `<div class="muted" style="font-size:13px">${esc(q.why)}</div>` : ''}
+          <div class="muted" style="font-size:12px">${q.minutes} min · +${q.gold} G · ${q.stat}</div></div>
+        <button class="btn small ${q.accepted ? '' : 'primary'}" data-act="side" data-id="${rev.date}" data-sub="${q.ref}">${q.accepted ? 'drop' : 'accept'}</button>
+      </div>`).join(''), '☘');
   }
   // note to the System
   h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">✎</span>NOTE TO THE SYSTEM</div><div class="sys-body">
@@ -1881,6 +1925,9 @@ document.addEventListener('click', async e => {
     case 'tgShadows': ui.allShadows = !ui.allShadows; return render();
     case 'cal': ui.calMonth = id; return render();
     case 'logSub': ui.logSub = id; return render();
+    case 'panel': ui.panels.has(id) ? ui.panels.delete(id) : ui.panels.add(id); return render();
+    case 'paid': return acceptPaid(id, b.dataset.sub);
+    case 'paidNo': return dismissPaid(id, b.dataset.sub);
     case 'calday': ui.calDay = ui.calDay === id ? '' : id; return render();
     case 'useItem': {
       const it = ITEMS[id]; if (player().inv[id] < 1) return;
@@ -1952,7 +1999,7 @@ document.addEventListener('pointerdown', () => {
 // ---------- Android back button: go one step back instead of closing the app
 function go(t) {
   if (t === tab) { render(); window.scrollTo(0, 0); return; }   // tapping the current tab just refreshes it
-  tab = t; LS.set('ss_tab', t); ui.openTasks.clear(); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
+  tab = t; LS.set('ss_tab', t); ui.openTasks.clear(); ui.panels.clear(); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
 }
 window.addEventListener('popstate', e => {
   if (!$('#modal').classList.contains('hidden')) { closeModal(true); return; }

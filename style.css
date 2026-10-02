@@ -315,3 +315,13 @@ label .ic{width:15px;height:15px;opacity:.85}
 .pm{display:grid;grid-template-columns:minmax(70px,34%) 1fr auto;gap:8px;align-items:center;margin:7px 0;font-size:14px}
 .pm.me .pname{color:var(--accent)}
 .pname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---- v16: collapsible panels, paid work ---- */
+.panel-head{width:100%;background:none;border:0;border-bottom:1px solid var(--line-soft);text-align:left;cursor:pointer}
+.panel-head i{font-style:normal;font-size:12px;color:var(--muted);margin-left:8px}
+.panel-head:hover{color:#fff}
+.pcount{font-family:Rajdhani;font-size:13px;color:var(--accent);border:1px solid rgba(79,182,255,.45);border-radius:10px;padding:0 8px;letter-spacing:0}
+.opp-meta .pay{color:var(--gold);border-color:rgba(255,207,90,.5)!important}
+.opp-meta .kind-job{color:var(--green);border-color:rgba(61,255,168,.45)!important}
+.opp-meta .kind-contract{color:var(--accent);border-color:rgba(79,182,255,.45)!important}
+.opp-meta .kind-freelance{color:var(--purple);border-color:rgba(176,124,255,.45)!important}

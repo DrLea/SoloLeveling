@@ -26,6 +26,10 @@ If a file named `ai-plan-<today>.json` exists anywhere in Drive, **today is proc
  "bonus":{"text":"reward for clearing all","xp":60,"gold":40},
  "penalty":{"title":"Penalty Quest: ...","rank":"C","stat":"STR"}}
 ```
+## Paid work in the daily plan
+`"paidOpportunities":[{"ref","title","company","url","why","pay","place","kind":"job|contract|freelance","deadline","subtasks":[...]}]`
+3-5 fresh, verified, currently open: remote jobs and contracts in Python/backend/AI/GPU that accept a contractor registered in Uzbekistan, plus freelance gigs for quick money. Never an invented link, company or salary. Don't repeat what appeared in recent plans' `paid`. Accepting one in the app creates an application dungeon (read the posting → tailor the CV → write → send → follow up).
+
 ## Rules
 - The minutes of all quests added together must be ≤ `dailyMinutes`, with at most `maxQuests` quests. Priority order: overdue, then deadline ≤ 2 days, then pinned (`pinDay == today`), then penalty tasks, then repeating tasks, then balancing the stats.
 - Big or vague tasks (rank A/S, more than 90 min, or several steps with no subtasks): split them into 3-8 concrete subtasks and assign only 1-2 of those subtasks today, using the exact subtask titles.

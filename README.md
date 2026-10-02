@@ -96,6 +96,11 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Analytics** (Record → Analytics): when you actually work by hour, which ranks you drop, how long a task lives, planned minutes vs measured, EXP by week.
 - **Hunter license**: Status → "Export hunter license" saves a PNG card with level, rank, class, stats, army and titles.
 
+## v16
+- **Paid opportunities.** The 4 AM task now also searches for work: remote jobs and contracts (Python/backend/AI/GPU, contractor-friendly) and freelance gigs. They land in a **PAID OPPORTUNITIES** panel on the Quests screen with company, pay, place and a verified link. **apply** opens an application dungeon (read the posting → tailor the CV → write the message → send → follow up in a week), **✕** dismisses. The list refreshes with each day's plan.
+- **Collapsible panels.** PAID OPPORTUNITIES, WEEKLY REVIEW, OPPORTUNITIES and SIDE QUESTS are collapsed by default with a counter of unhandled items in the header; they fold back when you leave the tab.
+- **Fixed:** sharing a dungeon failed with "Drive 400 — invalid JSON payload" because party files were sent to Drive's metadata endpoint instead of its upload endpoint.
+
 ## v15 — party
 Any dungeon can be shared. Press **⇪ share** on its card: the app makes a folder inside `SoloSystem`, marks it "anyone with the link can edit", writes `party.json` (title, steps, link, deadline) into it, and opens the phone's share sheet (on desktop the link is copied).
 
