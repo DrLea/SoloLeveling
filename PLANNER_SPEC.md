@@ -8,7 +8,7 @@
 - `plans`: map date → the plans that have already been applied. A quest with `blocked: true` was pushed back by the hunter; `reason` says why, and it doesn't count for or against the day.
 - `notes`: map date → `{date, text}` — what the hunter wrote to the coach that day. **Read the last 3 days and act on it.**
 - `settings.standing`: permanent standing orders. Always obey them.
-- `settings.restDays`: rest weekdays (0=Sunday). `restDates`: map date → `{rest:true|false}` — a day marked in the calendar (holiday, day off, or a weekend he decided to work) **overrides** the weekday rule. On a rest day: at most 3 short quests, ≤45 minutes total, only repeating habits, anything due within 2 days and accepted side quests, and never a penalty.
+- `settings.restDays`: rest weekdays (0=Sunday). `restDates`: map date → `{rest:true|false}` — a day marked in the calendar (holiday, day off, or a weekend he decided to work) **overrides** the weekday rule. On a rest day: at most 3 short quests, ≤45 minutes total, only repeating habits and accepted side quests, and never a penalty — except that anything overdue or due today/tomorrow still goes in, on top of that limit.
 - `log` entries of `type: "focus"` hold real measured minutes (`minutes`, `taskId`) — use them so your `minutes` estimates are honest.
 
 **Today** = the current date in UTC+5, where the day starts at 04:00.
@@ -31,7 +31,9 @@ If a file named `ai-plan-<today>.json` exists anywhere in Drive, **today is proc
 3-5 fresh, verified, currently open: remote jobs and contracts in Python/backend/AI/GPU that accept a contractor registered in Uzbekistan, plus freelance gigs for quick money. Never an invented link, company or salary. Don't repeat what appeared in recent plans' `paid`. Accepting one in the app creates an application dungeon (read the posting → tailor the CV → write → send → follow up).
 
 ## Rules
-- The minutes of all quests added together must be ≤ `dailyMinutes`, with at most `maxQuests` quests. Priority order: overdue, then deadline ≤ 2 days, then pinned (`pinDay == today`), then penalty tasks, then repeating tasks, then balancing the stats.
+- **The deadline rule overrides everything.** Every task that is overdue, due today or due tomorrow goes into `quests` no matter what — rest day, time budget, quest cap, standing orders, a bad note, all of it. Give each one a `note` saying why ("overdue — it cannot wait" / "deadline due today"). The app enforces this after reading your file, so a plan that leaves one out is simply corrected; write it in yourself so the wording is yours.
+- These forced quests do **not** count against `dailyMinutes` or `maxQuests`. Fill the rest of the day up to those limits as usual, so habits are not pushed out by a deadline.
+- The minutes of the remaining (non-forced) quests added together must be ≤ `dailyMinutes`, with at most `maxQuests` of them. Priority order: overdue, then deadline ≤ 2 days, then pinned (`pinDay == today`), then penalty tasks, then repeating tasks, then balancing the stats.
 - Big or vague tasks (rank A/S, more than 90 min, or several steps with no subtasks): split them into 3-8 concrete subtasks and assign only 1-2 of those subtasks today, using the exact subtask titles.
 - XP guide: E10 D20 C40 B70 A120 S200. A subtask quest is worth 10-40 XP. Gold is about XP/2.
 - Base the message on real facts: the streak, the last 7 days, yesterday's result, upcoming deadlines, and the hunter's note. Don't add fluff.
@@ -62,4 +64,4 @@ Real and verified only: free, funded or paid-to-participate; remote, Germany or 
 - 3-4 of them, for **living**, not productivity: sport with other people, being outdoors, something with friends or family, hands-on or cultural, something restful. Never work, study or chores.
 - Invent them yourself from what the week looked like: long screen streaks → get outside; no social entries → something with people; heavy training week → something calm.
 - Concrete and doable on the coming rest days, each with a gold reward (60-150). The hunter accepts the ones he wants in the app; they become tasks due at the end of the rest block.
-- Rest days (`settings.restDays`) get at most 3 short quests, ≤45 minutes total, and never a penalty.
+- Rest days (`settings.restDays`) get at most 3 short quests, ≤45 minutes total, and never a penalty — anything overdue or due today/tomorrow is the one exception and goes in anyway.

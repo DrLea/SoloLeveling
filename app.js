@@ -60,6 +60,19 @@ const ITEMS = {   // summoned with mana now, never bought with gold
   shield: { name: 'Streak Shield', icon: '⛨', desc: 'Absorbs one failed daily quest — no penalty, streak kept' },
   potion: { name: 'EXP Potion', icon: '⚗', desc: 'Double EXP until the day resets' }
 };
+// rewards you can take as they are instead of inventing your own
+const SHOP_TEMPLATES = [
+  ['Proper coffee somewhere else', 40], ['One episode', 60], ['Dessert, no guilt', 70],
+  ['Taxi instead of the bus', 90], ['An hour of gaming', 110], ['A film in the evening', 130],
+  ['Order food instead of cooking', 180], ['Sleep in, no alarm', 220], ['A new book', 380],
+  ['An evening out with friends', 450], ['Day off from the System', 700], ['Something off the wishlist', 1200]
+];
+// gold buys time and air, never power — power still comes from the army
+const SERVICES = {
+  restpass: { name: 'Rest Day Pass', cost: 250, icon: '\u263e', desc: 'Marks tomorrow as a rest day: habits and anything burning only, no penalty, streak safe' },
+  grace: { name: 'Deadline Grace', cost: 150, icon: '\u231b', desc: 'Pushes your most urgent deadline back by one day \u2014 once, honestly' }
+};
+const OFFER_OFF = 0.3;   // the daily offer takes 30% off
 const RANK_WEIGHT = { E: 1, D: 2, C: 4, B: 7, A: 12, S: 20 };   // how strong a shadow is
 const MANA_PER_DAY = 10, MANA_ON_CLEAR = 10;
 const CLASS_LEVEL = 10;   // a class is chosen here, and every level after gives a skill point
@@ -110,7 +123,7 @@ let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
 let apiKeyCache = null;         // decrypted Anthropic key (memory only)
 let tab = LS.get('ss_tab', 'quests');
-let ui = { showDone: false, showSched: false, openTasks: new Set(), panels: new Set() };
+let ui = { showDone: false, showSched: false, openTasks: new Set(), panels: new Set(), dlOpen: '' };
 
 function S() { return db.settings; }
 function touch(o) { o.updatedAt = now(); return o; }
@@ -122,12 +135,86 @@ function dayEndTs(key) { const s = S(); return Date.parse(addDays(key, 1) + 'T00
 function addDays(key, n) { const d = new Date(key + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 function addMonths(key, n) { const d = new Date(key + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + n); return d.toISOString().slice(0, 10); }
 function weekday(key) { return new Date(key + 'T00:00:00Z').getUTCDay(); }
+// ---------- deadlines: quick chips, "!tom" shorthand, and the hard rule
+function nextWeekday(target) {           // the next one, never today
+  let d = addDays(today(), 1);
+  for (let i = 0; i < 7; i++) { if (weekday(d) === target) return d; d = addDays(d, 1); }
+  return d;
+}
+function endOfMonth() { const dt = new Date(today() + 'T00:00:00Z'); dt.setUTCMonth(dt.getUTCMonth() + 1, 0); return dt.toISOString().slice(0, 10); }
+const DEADLINE_CHIPS = [
+  { k: 'today', label: 'today', f: () => today() },
+  { k: 'tom', label: 'tomorrow', f: () => addDays(today(), 1) },
+  { k: 'd3', label: '+3 days', f: () => addDays(today(), 3) },
+  { k: 'week', label: '+1 week', f: () => addDays(today(), 7) },
+  { k: 'sat', label: 'Saturday', f: () => nextWeekday(6) },
+  { k: 'eom', label: 'end of month', f: () => endOfMonth() }
+];
+const WD_WORDS = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+// "finish the CV !tom" / "!3d" / "!fri" / "!2w" / "!eom" / "!2026-11-01" typed in the add box
+function parseDeadline(raw) {
+  const m = raw.match(/(^|\s)!([a-z0-9+-]+)\s*$/i);
+  if (!m) return { title: raw.trim(), deadline: '' };
+  const tok = m[2].toLowerCase().replace(/^\+/, '');
+  const head = raw.slice(0, m.index).trim();
+  let dl = '';
+  if (tok === 'today' || tok === 'tod' || tok === '0d') dl = today();
+  else if (['tom', 'tmr', 'tmrw', 'tomorrow', '1d'].includes(tok)) dl = addDays(today(), 1);
+  else if (/^\d{1,3}d$/.test(tok)) dl = addDays(today(), Math.min(365, parseInt(tok, 10)));
+  else if (/^\d{1,2}w$/.test(tok)) dl = addDays(today(), Math.min(52, parseInt(tok, 10)) * 7);
+  else if (tok === 'week' || tok === 'nextweek') dl = addDays(today(), 7);
+  else if (tok === 'eom' || tok === 'month') dl = endOfMonth();
+  else if (tok in WD_WORDS) dl = nextWeekday(WD_WORDS[tok]);
+  else if (/^\d{4}-\d{2}-\d{2}$/.test(m[2])) dl = m[2];
+  if (!dl || !head) return { title: raw.trim(), deadline: '' };   // unknown token stays part of the title
+  return { title: head, deadline: dl };
+}
+function chipDate(k) { const c = DEADLINE_CHIPS.find(x => x.k === k); return c ? c.f() : ''; }
+function daysLeft(dl) { return Math.round((Date.parse(dl) - Date.parse(today())) / 864e5); }
+function deadlineLabel(dl) {
+  const n = daysLeft(dl);
+  if (n < 0) return `overdue ${-n}d`;
+  if (n === 0) return 'due today';
+  if (n === 1) return 'tomorrow';
+  if (n <= 21) return `${n}d left`;
+  return fmtDay(dl);
+}
+function deadlineClass(dl) { const n = daysLeft(dl); return 'dl' + (n < 0 ? ' over' : n <= 1 ? ' hot' : n <= 3 ? ' warm' : ''); }
+// overdue, due today or due tomorrow: these are scheduled no matter what
+const isHardDue = t => !!t.deadline && !t.done && !t.deleted && t.deadline <= addDays(today(), 1);
 function fmtDay(key) { if (!key) return ''; const t = today(); if (key === t) return 'today'; if (key === addDays(t, 1)) return 'tomorrow'; if (key === addDays(t, -1)) return 'yesterday'; const d = new Date(key + 'T00:00:00Z'); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' }); }
 const today = () => dayKey();
 function isRestDay(d = today()) {
   const mark = db.restDates?.[d];                     // a day marked in the calendar wins
   if (mark) return !!mark.rest;
   return (S().restDays || []).includes(weekday(d));
+}
+function setDeadline(t, v) {
+  t.deadline = v || ''; touch(t);
+  if (v) { const n = enforceHardDeadlines(); toast(daysLeft(v) <= 1 ? 'Due ' + deadlineLabel(v) + (n ? ' — added to today' : '') : 'Deadline ' + fmtDay(v)); }
+  else toast('Deadline cleared');
+  save();
+}
+// the hard rule: anything overdue / due today / due tomorrow is in today's quests, whatever the day looks like
+function enforceHardDeadlines() {
+  const plan = db.plans[today()]; if (!plan) return 0;
+  let added = 0;
+  for (const t of liveTasks().filter(isHardDue)) {
+    if (!isActive(t)) continue;
+    if (plan.quests.some(q => q.taskId === t.id)) continue;
+    const open = t.subtasks.filter(s => !s.done);
+    const sub = open.length ? open[0] : null;
+    plan.quests.push({
+      taskId: t.id, subId: sub ? sub.id : null, urgent: true,
+      xp: sub ? Math.max(8, Math.round(RANK_XP[t.rank] / Math.max(2, t.subtasks.length))) : RANK_XP[t.rank],
+      gold: sub ? 8 : Math.round(RANK_XP[t.rank] / 2),
+      minutes: sub ? Math.max(15, Math.round(RANK_MIN[t.rank] / Math.max(2, t.subtasks.length))) : RANK_MIN[t.rank],
+      note: t.deadline < today() ? 'overdue — it cannot wait' : 'deadline ' + deadlineLabel(t.deadline)
+    });
+    added++;
+  }
+  if (added) touch(plan);
+  return added;
 }
 function toggleRestDate(d) {
   if (!db.restDates) db.restDates = {};
@@ -517,7 +604,7 @@ function applyPlan(p, source) {
     let subId = null;
     if (q.subtask) { const st = t.subtasks.find(x => norm2(x.title) === norm2(q.subtask)); subId = st ? st.id : null; if (!st) { const ns = { id: uid(), title: q.subtask, done: false }; t.subtasks.push(ns); subId = ns.id; touch(t); } }
     if (t.nextDay && t.nextDay > p.date) { t.nextDay = ''; touch(t); }
-    quests.push({ taskId, subId, xp: clamp(+q.xp || RANK_XP[t.rank], 5, 400), gold: clamp(+q.gold || Math.round(RANK_XP[t.rank] / 2), 0, 300), minutes: +q.minutes || RANK_MIN[t.rank], note: q.note || '' });
+    quests.push({ taskId, subId, xp: clamp(+q.xp || RANK_XP[t.rank], 5, 400), gold: clamp(+q.gold || Math.round(RANK_XP[t.rank] / 2), 0, 300), minutes: +q.minutes || RANK_MIN[t.rank], note: q.note || '', urgent: !!q.urgent });
   }
   const paid = (p.paidOpportunities || []).map((o, i) => ({
     ref: o.ref || 'p' + i, title: o.title || '', url: o.url || '', why: o.why || '', company: o.company || '',
@@ -529,6 +616,7 @@ function applyPlan(p, source) {
     quests, bonus: p.bonus || { text: '', xp: 50, gold: 30 }, penalty: p.penalty || { title: 'Penalty Quest: 100 push-ups, no excuses', rank: 'C', stat: 'STR' },
     bonusClaimed: false, penaltyApplied: false, generatedAt: p.generatedAt || new Date().toISOString(), appliedAt: now()
   });
+  if (p.date === today()) enforceHardDeadlines();   // the AI may have skipped a dated task — the rule still holds
   return true;
 }
 function scoreTasks() {
@@ -544,19 +632,30 @@ function localPlan() {
   const rest = isRestDay();
   const budget = rest ? Math.min(45, S().dailyMinutes) : S().dailyMinutes;
   const max = rest ? 3 : S().maxQuests;
-  let cands = scoreTasks();
-  if (rest) cands = cands.filter(({ t }) => t.repeat?.type !== 'none' || t.origin === 'penalty' || t.origin === 'side' || (t.deadline && t.deadline <= addDays(today(), 2)));
-  let used = 0; const quests = [];
+  const all = scoreTasks();
+  // a task that is overdue or due today/tomorrow is forced in: no rest day, time budget or quest cap holds it back
+  const forcedIds = new Set(all.filter(({ t }) => isHardDue(t)).map(({ t }) => t.id));
+  let cands = all;
+  if (rest) cands = cands.filter(({ t }) => forcedIds.has(t.id) || t.repeat?.type !== 'none' || t.origin === 'penalty' || t.origin === 'side');
+  cands = [...cands.filter(({ t }) => forcedIds.has(t.id)), ...cands.filter(({ t }) => !forcedIds.has(t.id))];
+  // forced quests sit on top of the day's allowance: they never spend the budget or the slots,
+  // so a deadline can't quietly push your habits out of the day
+  let used = 0, slots = 0; const quests = [];
   for (const { t } of cands) {
-    if (quests.length >= max) break;
+    const forced = forcedIds.has(t.id);
+    const note = forced ? (t.deadline < today() ? 'overdue — it cannot wait' : 'deadline ' + deadlineLabel(t.deadline)) : '';
     const open = t.subtasks.filter(s => !s.done);
+    if (!forced && slots >= max) continue;
     if (open.length) {
       const s = open[0]; const m = Math.max(15, Math.round(RANK_MIN[t.rank] / Math.max(2, t.subtasks.length)));
-      if (used + m > budget && quests.length) continue; used += m;
-      quests.push({ taskId: t.id, subtask: s.title, xp: Math.max(8, Math.round(RANK_XP[t.rank] / Math.max(2, t.subtasks.length))), gold: 8, minutes: m });
+      if (!forced && used + m > budget && quests.length) continue;
+      if (!forced) { used += m; slots++; }
+      quests.push({ taskId: t.id, subtask: s.title, urgent: forced, note, xp: Math.max(8, Math.round(RANK_XP[t.rank] / Math.max(2, t.subtasks.length))), gold: 8, minutes: m });
     } else {
-      const m = RANK_MIN[t.rank]; if (used + m > budget && quests.length) continue; used += m;
-      quests.push({ taskId: t.id, minutes: m });
+      const m = RANK_MIN[t.rank];
+      if (!forced && used + m > budget && quests.length) continue;
+      if (!forced) { used += m; slots++; }
+      quests.push({ taskId: t.id, minutes: m, urgent: forced, note });
     }
   }
   return {
@@ -622,8 +721,9 @@ function toggleToday(t, subId) {
   t.pinDay = today(); touch(t); touch(plan);
   sfx('tick'); toast(sub ? 'Step added to today' : 'Added to today\'s quests'); save();
 }
-function addUrgentQuest(title) {
-  const t = newTask(title, { origin: 'urgent', pinDay: today() });
+function addUrgentQuest(raw) {
+  const { title, deadline } = parseDeadline(raw);
+  const t = newTask(title, { origin: 'urgent', pinDay: today(), deadline });
   const plan = ensurePlan();
   plan.quests.push({ taskId: t.id, subId: null, xp: RANK_XP[t.rank], gold: Math.round(RANK_XP[t.rank] / 2), minutes: RANK_MIN[t.rank], note: 'added by you', added: true });
   touch(plan); sfx('tick'); toast('Added to today'); save();
@@ -868,6 +968,7 @@ function runDaily() {
   }
   // wake repeating tasks whose nextDay arrived
   for (const t of liveTasks()) if (t.nextDay && t.nextDay <= today() && t.done) { t.done = false; touch(t); }
+  if (db.plans[today()] && enforceHardDeadlines()) save({ noRender: true });
 }
 
 // ---------- AI (Haiku)
@@ -1336,8 +1437,9 @@ function viewQuests(p) {
       if (q.blocked) continue;
       const s = q.subId ? t.subtasks.find(x => x.id === q.subId) : null; const dn = questDone(q, d);
       const running = tm && tm.taskId === q.taskId && (tm.subId || null) === (q.subId || null);
-      h += `<div class="goal ${dn ? 'done' : ''}"><input type="checkbox" class="chk" data-act="quest" data-i="${i}" ${dn ? 'checked' : ''} ${q.skipped ? 'disabled' : ''}>
-        <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${q.note ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}
+      const hardDue = t.deadline && !dn && t.deadline <= addDays(d, 1);
+      h += `<div class="goal ${dn ? 'done' : ''} ${hardDue ? (t.deadline < d ? 'od' : 'due') : ''}"><input type="checkbox" class="chk" data-act="quest" data-i="${i}" ${dn ? 'checked' : ''} ${q.skipped ? 'disabled' : ''}>
+        <div class="gname"><span>${esc(s ? s.title : t.title)}</span>${s ? `<small>↳ ${esc(t.title)}</small>` : ''}${hardDue ? `<small class="${deadlineClass(t.deadline)}" style="display:inline-block;margin-top:3px">\u231b ${esc(deadlineLabel(t.deadline))}</small>` : ''}${q.note && !hardDue ? `<small>${esc(q.note)}</small>` : ''}${q.skipped ? '<small style="color:var(--gold)">skipped with a token</small>' : ''}
           ${running ? `<small class="focus-live ${tm.paused ? 'paused' : ''}">⏱ <span id="focusT">${fmtSecs(Timer.elapsed())}</span>${tm.paused ? ' (paused)' : ''}
             <a href="#" data-act="${tm.paused ? 'timerResume' : 'timerPause'}" data-i="${i}">${tm.paused ? 'resume' : 'pause'}</a> ·
             <a href="#" data-act="timerStop" data-i="${i}">stop &amp; record</a> ·
@@ -1422,11 +1524,17 @@ function subList(t) {
     </div>`;
   }).join('')}</div>`;
 }
+// the quick deadline row — same chips in the task list and in the editor
+function deadlineBar(t) {
+  return `<div class="dlbar">${DEADLINE_CHIPS.map(c => { const v = c.f(); return `<button class="chip sm ${t.deadline === v ? 'on' : ''}" data-act="dlSet" data-id="${t.id}" data-sub="${c.k}">${c.label}</button>`; }).join('')}
+    <input type="date" class="dlinp" data-dl="${t.id}" value="${esc(t.deadline)}" title="Pick a date">
+    ${t.deadline ? `<button class="chip sm x" data-act="dlSet" data-id="${t.id}" data-sub="clear">clear</button>` : ''}</div>`;
+}
 function taskRow(t) {
   const d = today(); const subDone = t.subtasks.filter(s => s.done).length;
   const meta = [];
-  if (t.deadline) meta.push(`<span class="${t.deadline < d && !t.done ? 'over' : ''}">⌛ ${esc(fmtDay(t.deadline))}</span>`);
-
+  if (t.deadline) meta.push(`<button class="${deadlineClass(t.deadline)}" data-act="dlOpen" data-id="${t.id}" title="${esc(fmtDay(t.deadline))} — tap to change">\u231b ${esc(deadlineLabel(t.deadline))}</button>`);
+  else if (!t.done) meta.push(`<button class="dl none" data-act="dlOpen" data-id="${t.id}" title="Set a deadline">\u231b deadline</button>`);
   if (t.repeat?.type !== 'none') meta.push(`<span>${esc(repeatLabel(t.repeat))}</span>`);
   if (t.nextDay && t.nextDay > d) meta.push(`<span>next ${esc(fmtDay(t.nextDay))}</span>`);
   if (t.reward?.text) meta.push(`<span>🎁 ${esc(t.reward.text)}</span>`);
@@ -1445,6 +1553,7 @@ function taskRow(t) {
     ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
     ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
     <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>
+    ${ui.dlOpen === t.id ? deadlineBar(t) : ''}
     ${open ? subList(t) : ''}</div>`;
 }
 function partyBoard(t) {
@@ -1502,9 +1611,71 @@ function classCard(p) {
       <button class="btn small ${p.skillPoints && r < sk.max ? 'primary' : ''}" data-act="learn" data-id="${id}" ${p.skillPoints && r < sk.max ? '' : 'disabled'}>+</button></div>`; }).join('')}
   </div>`;
 }
+// ---------- the hologram: a figure drawn from your own stats, nothing pre-made
+const FORM_NAMES = { E: 'Unverified outline', D: 'Reinforced frame', C: 'Plated', B: 'Cloaked', A: 'Shadow-wreathed', S: 'Crowned', National: 'Sovereign', Monarch: 'Monarch of Shadows' };
+function hologram(p) {
+  const st = p.stats;
+  const stage = HUNTER_RANKS.findIndex(([, r]) => r === p.hunter);          // 0 = E … 7 = Monarch
+  const sw = 17 + Math.min(15, st.STR / 5);                                 // shoulders widen with STR
+  const wa = 10 + Math.min(7, st.VIT / 8);                                  // waist thickens with VIT
+  const lw = Math.max(2.3, 5.4 - Math.min(2.9, st.AGI / 28)).toFixed(1);    // limbs thin out with AGI
+  const halo = (17 + Math.min(14, st.INT / 8)).toFixed(1);                  // the mind ring grows with INT
+  const marks = Math.min(6, Math.floor(st.PER / 18));                       // PER puts marks in orbit
+  const core = (4 + Math.min(4, st.VIT / 14)).toFixed(1);
+  const X = 60, SY = 76, WY = 128, HY = 134, FY = 206;
+  const g = [];
+  // head, neck, torso, limbs — the frame everyone has
+  g.push(`<circle class="hl" cx="${X}" cy="44" r="13"/>`);
+  g.push(`<path class="hl" d="M${X} 57v${SY - 57}"/>`);
+  g.push(`<path class="hl torso" d="M${X - sw} ${SY} L${X + sw} ${SY} L${X + wa} ${WY} L${X - wa} ${WY} Z"/>`);
+  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X - sw + 2} ${SY + 2} L${X - sw - 3} ${WY + 4}"/>`);
+  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X + sw - 2} ${SY + 2} L${X + sw + 3} ${WY + 4}"/>`);
+  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X - wa + 1} ${HY} L${X - wa - 2} ${FY}"/>`);
+  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X + wa - 1} ${HY} L${X + wa + 2} ${FY}"/>`);
+  // the core, brighter the healthier you are
+  g.push(`<circle class="core" cx="${X}" cy="94" r="${core}"/>`);
+  g.push(`<circle class="core-ring" cx="${X}" cy="94" r="${+core + 5}"/>`);
+  // the mind ring
+  g.push(`<ellipse class="halo" cx="${X}" cy="26" rx="${halo}" ry="${(+halo / 3.4).toFixed(1)}"/>`);
+  // PER marks in orbit
+  for (let i = 0; i < marks; i++) {
+    const a = (i / Math.max(1, marks)) * Math.PI * 2;
+    g.push(`<circle class="mark" cx="${(X + Math.cos(a) * (+halo + 7)).toFixed(1)}" cy="${(26 + Math.sin(a) * (+halo / 3.2 + 4)).toFixed(1)}" r="1.9" style="animation-delay:${(i * 0.3).toFixed(1)}s"/>`);
+  }
+  // what the ranks add on top
+  if (stage >= 1) { g.push(`<path class="hl thin" d="M${X - wa - 2} ${(SY + WY) / 2} h${(wa + 2) * 2}"/><path class="hl thin" d="M${X - wa - 4} ${(SY + WY) / 2 + 12} h${(wa + 4) * 2}"/>`); }
+  if (stage >= 2) { g.push(`<path class="hl plate" d="M${X - sw - 4} ${SY + 1} q${sw / 2} -11 ${sw - 1} 0"/><path class="hl plate" d="M${X + sw + 4} ${SY + 1} q${-sw / 2} -11 ${-(sw - 1)} 0"/>`); }
+  if (stage >= 3) { g.push(`<path class="cloak" d="M${X - sw} ${SY + 2} C${X - sw - 20} ${SY + 50} ${X - sw - 14} ${FY - 24} ${X - wa - 10} ${FY - 6} L${X + wa + 10} ${FY - 6} C${X + sw + 14} ${FY - 24} ${X + sw + 20} ${SY + 50} ${X + sw} ${SY + 2} Z"/>`); }
+  if (stage >= 4) for (let i = 0; i < 5; i++) {
+    const wx = X - 34 + i * 17;
+    g.push(`<path class="wisp" style="animation-delay:${(i * 0.45).toFixed(2)}s" d="M${wx} ${FY + 4} q4 -14 0 -26 q-4 -10 2 -18"/>`);
+  }
+  if (stage >= 5) g.push(`<path class="crown" d="M${X - 13} 36 L${X - 13} 25 L${X - 6.5} 31 L${X} 21 L${X + 6.5} 31 L${X + 13} 25 L${X + 13} 36 Z"/>`);
+  if (stage >= 6) g.push(`<ellipse class="sov" cx="${X}" cy="120" rx="46" ry="92"/>`);
+  if (stage >= 7) g.push(`<ellipse class="sov deep" cx="${X}" cy="120" rx="54" ry="104"/>`);
+  // the plate it stands on
+  g.push(`<ellipse class="base" cx="${X}" cy="${FY + 8}" rx="40" ry="9"/><ellipse class="base in" cx="${X}" cy="${FY + 8}" rx="24" ry="5.5"/>`);
+  const drivers = `STR ${st.STR} → frame · VIT ${st.VIT} → core · AGI ${st.AGI} → build · INT ${st.INT} → halo · PER ${st.PER} → marks`;
+  const nextAt = HUNTER_RANKS[stage + 1];
+  return `<div class="holo-wrap ${p.cls || 'noclass'} r${p.hunter.toLowerCase()}">
+    <svg class="holo" viewBox="0 0 120 250" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <defs><linearGradient id="hsweep" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0"/><stop offset=".5" stop-color="currentColor" stop-opacity=".75"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+      <g class="figure">${g.join('')}</g>
+      <rect class="scan" x="0" y="0" width="120" height="22" fill="url(#hsweep)"/>
+    </svg>
+    <div class="holo-side">
+      <div class="holo-name">${esc(FORM_NAMES[p.hunter] || p.hunter)}</div>
+      <div class="holo-sub">${esc(p.hunter)}-Rank · Lv.${p.level}${p.cls && CLASSES[p.cls] ? ' · ' + esc(CLASSES[p.cls].name) : ''}${p.awakenings ? ' · ✦' + p.awakenings : ''}</div>
+      <div class="holo-drv">${esc(drivers)}</div>
+      ${nextAt ? `<div class="holo-next">The form changes again at level ${nextAt[0]} — ${esc(nextAt[1])}-Rank</div>` : `<div class="holo-next">There is nothing above this form.</div>`}
+    </div>
+  </div>`;
+}
 function viewStatus(p) {
   const title = TITLES.find(t => t.id === S().title && t.test(p));
-  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◉</span>STATUS</div><div class="sys-body">
+  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u25c9</span>STATUS</div><div class="sys-body">
+    ${hologram(p)}
     <div class="player"><div class="lvl-big">${p.level}<small>LEVEL</small></div>
     <div class="kv"><b>Name</b><span>${esc(S().name)}</span><b>Rank</b><span>${p.hunter}-Rank Hunter${p.awakenings ? ` <span style="color:var(--purple)">✦${p.awakenings}</span>` : ''}</span><b>Title</b><span>${title ? esc(title.name) : '<span class="muted">none</span>'}</span><b>Streak</b><span>${p.streak} day${p.streak === 1 ? '' : 's'} (best ${p.bestStreak})</span><b>Gold</b><span style="color:var(--gold)">${p.gold} G</span>${p.awakenings ? `<b>Bonus</b><span style="color:var(--purple)">+${Math.round(p.awakenings * AWAKEN_BONUS * 100)}% EXP</span>` : ''}${p.potionActive ? `<b>Buff</b><span style="color:var(--green)">⚗ Double EXP today</span>` : ''}</div></div>
     <div class="section-title">EXP <span>${p.cur} / ${p.need}</span></div><div class="progress xp"><div style="width:${p.cur / p.need * 100}%"></div></div>
@@ -1676,16 +1847,44 @@ function viewLog(p) {
   } else h += `<p class="muted" style="text-align:center">Tap a day to see what you did.</p>`;
   return h;
 }
+// one of your own rewards, 30% off, the same one on every device all day
+function dailyOffer(items) {
+  if (items.length < 2) return null;
+  const pick = seededPick(items.map(i => i.id), 1, 'offer-' + today())[0];
+  const it = items.find(i => i.id === pick); if (!it) return null;
+  const cost = Math.max(1, Math.round(it.cost * (1 - OFFER_OFF)));
+  const taken = Object.values(db.log).some(e => e.type === 'buy' && !e.deleted && e.offer === today());
+  return { it, cost, taken };
+}
 function viewShop(p) {
   const items = Object.values(db.shop).filter(i => !i.deleted).sort((a, b) => a.cost - b.cost);
-  const buys = Object.values(db.log).filter(e => e.type === 'buy' && !e.deleted).sort((a, b) => b.at - a.at).slice(0, 15);
-  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◆</span>SHOP <span style="margin-left:auto;color:var(--gold)">${p.gold} G</span></div><div class="sys-body">
-    <p class="muted" style="margin-top:0">Define your own rewards and buy them with gold earned from quests.</p>
+  const buys = Object.values(db.log).filter(e => e.type === 'buy' && !e.deleted).sort((a, b) => b.at - a.at);
+  const spent = buys.reduce((n, b) => n + (+b.cost || 0), 0);
+  const offer = dailyOffer(items);
+  const taken = new Set(items.map(i => norm(i.title)));
+  const temps = SHOP_TEMPLATES.filter(([t]) => !taken.has(norm(t)));
+  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u25c6</span>SHOP <span style="margin-left:auto;color:var(--gold)">${p.gold} G</span></div><div class="sys-body">
+    <div class="econ"><div><b>${p.goldEarned}</b><small>earned</small></div><div><b>${spent}</b><small>spent</small></div><div><b style="color:var(--gold)">${p.gold}</b><small>in hand</small></div></div>
+    <p class="muted">Gold is yours to spend on real life. Write what you actually want \u2014 the price is yours to set too.</p>
     <div class="row"><input id="shopName" placeholder="Reward (e.g. 1h gaming)" class="grow"><input id="shopCost" type="number" placeholder="G" style="width:90px" min="1"><button class="btn primary" data-act="shopAdd">+</button></div>`;
-  h += items.length ? items.map(i => `<div class="shop-item"><div class="grow">${esc(i.title)}</div><span class="price">${i.cost} G</span><button class="btn small ${p.gold >= i.cost ? 'primary' : ''}" data-act="buy" data-id="${i.id}" ${p.gold >= i.cost ? '' : 'disabled'}>Buy</button><button class="icon-btn" data-act="shopDel" data-id="${i.id}">✕</button></div>`).join('') : `<div class="empty">No rewards yet.</div>`;
+  h += items.length ? items.map(i => `<div class="shop-item"><div class="grow">${esc(i.title)}</div><span class="price">${i.cost} G</span><button class="btn small ${p.gold >= i.cost ? 'primary' : ''}" data-act="buy" data-id="${i.id}" ${p.gold >= i.cost ? '' : 'disabled'}>Buy</button><button class="icon-btn" data-act="shopDel" data-id="${i.id}">\u2715</button></div>`).join('') : `<div class="empty">No rewards yet \u2014 take one from below to start.</div>`;
+  if (temps.length) h += `<div class="section-title" style="margin-top:14px">TAKE ONE AS IT IS</div>
+    <div class="chips wrap">${temps.slice(0, 12).map(([t, c], i) => `<button class="chip sm" data-act="shopTemp" data-id="${i}" data-sub="${esc(t)}" data-cost="${c}">${esc(t)} <b style="color:var(--gold)">${c}G</b></button>`).join('')}</div>
+    <p class="muted" style="font-size:12px;margin:6px 0 0">Tap to add it to your shelf. Prices are a starting point \u2014 delete and re-add at your own.</p>`;
   h += `</div></div>`;
-  h += `<p class="muted" style="font-size:13px;margin:0 0 12px">Skip tokens, shields and EXP potions are no longer bought — the army summons them with mana (Status tab).</p>`;
-  if (buys.length) h += `<div class="section-title">PURCHASE LOG</div>` + buys.map(b => `<div class="shop-item"><div class="grow">${esc(b.title)}<div class="muted" style="font-size:13px">${esc(fmtDay(b.day))}</div></div><span class="price">-${b.cost} G</span></div>`).join('');
+  if (offer) h += `<div class="sys-window card offer-card"><div class="sys-head"><span class="sys-icon">\u2726</span>TODAY'S OFFER</div><div class="sys-body">
+    <div class="shop-item"><div class="grow"><b>${esc(offer.it.title)}</b><div class="muted" style="font-size:13px">${offer.taken ? 'Already taken today.' : 'Today only, and only once.'}</div></div>
+      <span class="price old">${offer.it.cost} G</span><span class="price">${offer.cost} G</span>
+      <button class="btn small ${!offer.taken && p.gold >= offer.cost ? 'primary' : ''}" data-act="buyOffer" data-id="${offer.it.id}" ${!offer.taken && p.gold >= offer.cost ? '' : 'disabled'}>${offer.taken ? 'taken' : 'Buy'}</button></div></div></div>`;
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u229b</span>SYSTEM SERVICES</div><div class="sys-body">
+    <p class="muted" style="margin-top:0">Gold buys you air, never power. Skip tokens, shields and potions are still summoned from the army with mana.</p>
+    ${Object.entries(SERVICES).map(([k, sv]) => `<div class="service"><span class="sic">${sv.icon}</span><div class="grow"><b>${esc(sv.name)}</b><div class="muted" style="font-size:13px">${esc(sv.desc)}</div></div>
+      <span class="price">${sv.cost} G</span><button class="btn small ${p.gold >= sv.cost ? 'primary' : ''}" data-act="service" data-id="${k}" ${p.gold >= sv.cost ? '' : 'disabled'}>Use</button></div>`).join('')}</div></div>`;
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u25c8</span>ARMY SUMMONS <span style="margin-left:auto;color:var(--purple)">${p.mana} MP</span></div><div class="sys-body">
+    <p class="muted" style="margin-top:0">Paid with mana, which gathers ${p.manaPerDay} a day and +${MANA_ON_CLEAR} for every daily quest you clear.</p>
+    ${Object.entries(SUMMONS).map(([k, it]) => `<div class="service"><span class="sic mp">\u25c8</span><div class="grow"><b>${esc(it.name)}</b><div class="muted" style="font-size:13px">${esc(it.desc)}</div></div>
+      <span class="price mp">${it.cost} MP</span><button class="btn small ${p.mana >= it.cost ? 'primary' : ''}" data-act="summon" data-id="${k}" ${p.mana >= it.cost ? '' : 'disabled'}>Arise</button></div>`).join('')}</div></div>`;
+  if (buys.length) h += `<div class="section-title">PURCHASE LOG <span>${spent} G total</span></div>` + buys.slice(0, 20).map(b => `<div class="shop-item"><div class="grow">${esc(b.title)}<div class="muted" style="font-size:13px">${esc(fmtDay(b.day))}</div></div><span class="price">-${b.cost} G</span></div>`).join('');
   return h;
 }
 function viewSettings() {
@@ -1743,7 +1942,9 @@ function renderEdit() {
     <label>Link</label><input id="eUrl" type="url" placeholder="https://…" value="${esc(t.url || '')}">
     <label>${ICON.msg} Message to the System (read when it splits &amp; schedules this)</label>
     <textarea id="eHint" rows="2" placeholder="e.g. split by chapters · only evenings · needs the lab PC · do the boring part first">${esc(t.hint || '')}</textarea>
-    <div class="grid2"><div><label>Deadline</label><input id="eDeadline" type="date" value="${esc(t.deadline)}"></div>
+    <label>Deadline</label>
+    <div class="dlbar">${DEADLINE_CHIPS.map(c => { const v = c.f(); return `<button class="chip sm ${t.deadline === v ? 'on' : ''}" data-m="dl" data-v="${v}">${c.label}</button>`; }).join('')}${t.deadline ? `<button class="chip sm x" data-m="dl" data-v="">clear</button>` : ''}</div>
+    <div class="grid2"><div><input id="eDeadline" type="date" value="${esc(t.deadline)}">${t.deadline ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${esc(deadlineLabel(t.deadline))}${daysLeft(t.deadline) <= 1 ? ' · goes into today\'s quests' : ''}</p>` : ''}</div>
     <div><label>Rank (difficulty)</label><select id="eRank">${RANKS.map(x => `<option ${x === t.rank ? 'selected' : ''} value="${x}">${x} · ${RANK_XP[x]} XP</option>`).join('')}</select></div></div>
     <label>Stat</label><select id="eStat">${Object.entries(STATS).map(([k, v]) => `<option value="${k}" ${k === t.stat ? 'selected' : ''}>${k} — ${v} (${STAT_HINT[k]})</option>`).join('')}</select>
     <label>Type</label>
@@ -1788,6 +1989,7 @@ $('#modal').addEventListener('click', async e => {
   if (!editing) return;
   const b = e.target.closest('[data-m]'); if (!b) return;
   const m = b.dataset.m, i = +b.dataset.i;
+  if (m === 'dl') { readEditFields(); editing.deadline = b.dataset.v || ''; renderEdit(); return; }
   if (m === 'subtxt') return;
   readEditFields();
   const t = editing;
@@ -1826,6 +2028,7 @@ function confirmInline(b, txt) { if (b.dataset.confirm) return true; b.dataset.c
 // ---------- EVENTS
 let noteT = null;
 function bind(v) {
+  $$('.dlinp', v).forEach(el => { el.onchange = () => { const t = db.tasks[el.dataset.dl]; if (t) { ui.dlOpen = ''; setDeadline(t, el.value); } }; });
   const nt = $('#newTask', v);
   if (nt) nt.onkeydown = e => { if (e.key === 'Enter') addTask(); };
   const qq = $('#quickQuest', v);
@@ -1844,7 +2047,11 @@ function bind(v) {
 }
 function addTask() {
   const el = $('#newTask'); const v = el.value.trim(); if (!v) return;
-  el.value = ''; newTask(v); sfx('tick'); save(); $('#newTask')?.focus();
+  el.value = '';
+  const { title, deadline } = parseDeadline(v);
+  const t = newTask(title, { deadline });
+  if (deadline) { enforceHardDeadlines(); toast(`${title} \u2014 ${deadlineLabel(deadline)}`); }
+  sfx('tick'); save(); $('#newTask')?.focus();
 }
 document.addEventListener('click', async e => {
   const nav = e.target.closest('.bottomnav button');
@@ -1862,6 +2069,8 @@ document.addEventListener('click', async e => {
       value: t.hint || '', ok: 'Save'
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
     case 'toToday': return toggleToday(t, b.dataset.sub || null);
+    case 'dlOpen': ui.dlOpen = ui.dlOpen === id ? '' : id; return render();
+    case 'dlSet': { const k = b.dataset.sub; ui.dlOpen = ''; setDeadline(t, k === 'clear' ? '' : chipDate(k)); return; }
     case 'partyNew': {
       if (!t.subtasks.length) return toast('Add a few steps first — those are what the party shares');
       if (!confirmInline(b, 'Share?')) return;
@@ -1944,6 +2153,41 @@ document.addEventListener('click', async e => {
     }
     case 'shopAdd': { const n = $('#shopName').value.trim(), c = +$('#shopCost').value; if (!n || !(c > 0)) return toast('Name and price needed'); const it = touch({ id: uid(), title: n, cost: Math.round(c) }); db.shop[it.id] = it; return save(); }
     case 'shopDel': { const it = db.shop[id]; it.deleted = true; touch(it); return save(); }
+    case 'shopTemp': { const it = touch({ id: uid(), title: b.dataset.sub, cost: +b.dataset.cost || 50 }); db.shop[it.id] = it; sfx('tick'); toast('Added to your shelf'); return save(); }
+    case 'buyOffer': {
+      const it = db.shop[id]; if (!it) return;
+      const cost = Math.max(1, Math.round(it.cost * (1 - OFFER_OFF)));
+      if (player().gold < cost) return;
+      if (Object.values(db.log).some(e => e.type === 'buy' && !e.deleted && e.offer === today())) return toast('The offer is used for today');
+      if (!confirmInline(b, 'Confirm?')) return;
+      logAdd({ type: 'buy', title: it.title + ' \u2014 daily offer', cost, itemId: it.id, offer: today() });
+      sfx('done'); popup({ title: 'Offer Claimed', text: esc(it.title), reward: `-${cost} G (saved ${it.cost - cost} G) \u00b7 Enjoy it.` });
+      return save();
+    }
+    case 'service': {
+      const sv = SERVICES[id]; if (!sv) return;
+      if (player().gold < sv.cost) return;
+      if (id === 'restpass') {
+        const tm = addDays(today(), 1);
+        if (isRestDay(tm)) return toast('Tomorrow is already a rest day');
+        if (!confirmInline(b, 'Confirm?')) return;
+        if (!db.restDates) db.restDates = {};
+        db.restDates[tm] = touch({ date: tm, rest: true });
+        logAdd({ type: 'buy', title: sv.name + ' \u2014 ' + fmtDay(tm), cost: sv.cost });
+        sfx('done'); popup({ title: 'Rest Day Granted', text: `${fmtDay(tm)} is a rest day.`, reward: `-${sv.cost} G \u00b7 No penalty, streak safe.` });
+        return save();
+      }
+      if (id === 'grace') {
+        const pick = liveTasks().filter(x => isActive(x) && x.deadline).sort((a, b2) => a.deadline.localeCompare(b2.deadline))[0];
+        if (!pick) return toast('Nothing has a deadline right now');
+        if (!confirmInline(b, `+1 day: ${pick.title.slice(0, 22)}?`)) return;
+        pick.deadline = addDays(pick.deadline, 1); touch(pick);
+        logAdd({ type: 'buy', title: sv.name + ' \u2014 ' + pick.title, cost: sv.cost });
+        sfx('done'); toast(`${pick.title} \u2192 ${deadlineLabel(pick.deadline)}`);
+        return save();
+      }
+      return;
+    }
     case 'buy': { const it = db.shop[id]; if (player().gold < it.cost) return; if (!confirmInline(b, 'Confirm?')) return; logAdd({ type: 'buy', title: it.title, cost: it.cost, itemId: it.id }); sfx('done'); popup({ title: 'Item Purchased', text: esc(it.title), reward: `-${it.cost} G · Enjoy it. You earned it.` }); return save(); }
     case 'saveSettings': {
       const s = S();
