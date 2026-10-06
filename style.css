@@ -341,7 +341,7 @@ label .ic{width:15px;height:15px;opacity:.85}
 #modalBox .dlbar{border-top:0;padding:4px 0 2px}
 
 /* ---------- v17: shop ---------- */
-.econ{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 12px}
+.econ{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 4px}
 .econ>div{border:1px solid rgba(79,182,255,.2);background:rgba(79,182,255,.05);border-radius:8px;padding:8px;text-align:center}
 .econ b{display:block;font-family:Orbitron;font-size:17px}
 .econ small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
@@ -352,50 +352,10 @@ label .ic{width:15px;height:15px;opacity:.85}
 .service .sic.mp{border-color:rgba(176,124,255,.45);color:var(--purple)}
 .service .price{color:var(--gold);font-weight:700;white-space:nowrap;font-size:14px}
 .service .price.mp{color:var(--purple)}
-.shop-item .price.old{color:var(--muted);text-decoration:line-through;font-weight:400;font-size:13px}
-.offer-card{border-color:rgba(255,207,90,.45)!important}
-.offer-card .sys-head{color:var(--gold)}
 
-/* ---------- v17: the hologram ---------- */
-.holo-wrap{display:flex;gap:12px;align-items:center;margin:0 0 14px;padding:10px 4px 6px;
-  border:1px solid rgba(79,182,255,.22);border-radius:10px;
-  background:radial-gradient(ellipse at 28% 110%,rgba(79,182,255,.14),transparent 62%);overflow:hidden;position:relative}
-.holo{width:116px;height:236px;flex:none;overflow:hidden;filter:drop-shadow(0 0 7px var(--hc))}
-.holo-wrap{--hc:rgba(79,182,255,.55);--hs:#8fd4ff}
-.holo-wrap.assassin{--hc:rgba(176,124,255,.6);--hs:#d5bcff}
-.holo-wrap.scholar{--hc:rgba(79,214,255,.6);--hs:#aeeaff}
-.holo-wrap.berserker{--hc:rgba(255,99,120,.6);--hs:#ffb9c4}
-.holo-wrap.ra,.holo-wrap.rs,.holo-wrap.rnational,.holo-wrap.rmonarch{--hc:rgba(255,207,90,.6);--hs:#ffe6ad}
-.holo .figure{animation:hbreathe 5.5s ease-in-out infinite,hboot .9s ease-out 1}
-.holo .hl{fill:none;stroke:var(--hs);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round;opacity:.92}
-.holo .hl.torso{fill:var(--hc);opacity:.3;stroke-opacity:.95}
-.holo .hl.thin{stroke-width:.9;opacity:.5}
-.holo .hl.plate{stroke-width:2.1;opacity:.85}
-.holo .core{fill:var(--hs);opacity:.95;animation:hpulse 2.4s ease-in-out infinite}
-.holo .core-ring{fill:none;stroke:var(--hs);stroke-width:.8;opacity:.45;animation:hpulse 2.4s ease-in-out infinite reverse}
-.holo .halo{fill:none;stroke:var(--hs);stroke-width:.9;opacity:.4;animation:hspin 9s linear infinite;transform-origin:60px 44px}
-.holo .mark{fill:var(--hs);opacity:.8;animation:hblink 2.8s ease-in-out infinite}
-.holo .cloak{fill:var(--hc);opacity:.17;stroke:var(--hs);stroke-width:.8;stroke-opacity:.5}
-.holo .wisp{fill:none;stroke:var(--hs);stroke-width:1;opacity:.35;animation:hwisp 3.2s ease-in-out infinite}
-.holo .crown{fill:rgba(255,207,90,.3);stroke:#ffcf5a;stroke-width:1.3}
-.holo .sov{fill:none;stroke:var(--hs);stroke-width:.7;opacity:.22;animation:hpulse 3.6s ease-in-out infinite}
-.holo .sov.deep{opacity:.14;animation-duration:5s}
-.holo .base{fill:none;stroke:var(--hs);stroke-width:1;opacity:.5}
-.holo .base.in{opacity:.28}
-.holo .scan{color:var(--hs);opacity:.18;animation:hscan 4.2s linear infinite}
-.holo-side{min-width:0}
-.holo-name{font-family:Orbitron;font-size:15px;color:var(--hs);letter-spacing:.04em;text-shadow:0 0 10px var(--hc)}
-.holo-sub{font-size:13px;color:var(--text);opacity:.85;margin-top:3px}
-.holo-drv{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5}
-.holo-next{font-size:11.5px;color:var(--accent);opacity:.75;margin-top:6px}
-@keyframes hbreathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
-@keyframes hboot{0%{opacity:0;transform:scaleY(.1)}25%{opacity:.5}30%{opacity:.15}45%{opacity:.85;transform:scaleY(1)}55%{opacity:.3}100%{opacity:1;transform:scaleY(1)}}
-@keyframes hpulse{0%,100%{opacity:.45;transform:scale(.9)}50%{opacity:1;transform:scale(1.12)}}
-@keyframes hspin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
-@keyframes hblink{0%,100%{opacity:.25}50%{opacity:.9}}
-@keyframes hwisp{0%,100%{opacity:.12;transform:translateY(0)}50%{opacity:.45;transform:translateY(-5px)}}
-@keyframes hscan{0%{transform:translateY(-30px);opacity:0}10%{opacity:.09}90%{opacity:.09}100%{transform:translateY(250px);opacity:0}}
-@media (max-width:380px){.holo{width:96px;height:196px}.holo-name{font-size:14px}}
-@media (prefers-reduced-motion:reduce){.holo *{animation:none!important}}
 .goal.due{border-left:2px solid var(--gold);background:rgba(255,207,90,.05)}
 .goal.od{border-left:2px solid var(--red);background:rgba(255,77,109,.06)}
+
+/* ---------- v18: applications section ---------- */
+.task-wrap.app .task{border-left:2px solid rgba(176,124,255,.55)}
+.meta .appstep{color:var(--purple);border-color:rgba(176,124,255,.45)}

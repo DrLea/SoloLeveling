@@ -60,19 +60,11 @@ const ITEMS = {   // summoned with mana now, never bought with gold
   shield: { name: 'Streak Shield', icon: '⛨', desc: 'Absorbs one failed daily quest — no penalty, streak kept' },
   potion: { name: 'EXP Potion', icon: '⚗', desc: 'Double EXP until the day resets' }
 };
-// rewards you can take as they are instead of inventing your own
-const SHOP_TEMPLATES = [
-  ['Proper coffee somewhere else', 40], ['One episode', 60], ['Dessert, no guilt', 70],
-  ['Taxi instead of the bus', 90], ['An hour of gaming', 110], ['A film in the evening', 130],
-  ['Order food instead of cooking', 180], ['Sleep in, no alarm', 220], ['A new book', 380],
-  ['An evening out with friends', 450], ['Day off from the System', 700], ['Something off the wishlist', 1200]
-];
 // gold buys time and air, never power — power still comes from the army
 const SERVICES = {
   restpass: { name: 'Rest Day Pass', cost: 250, icon: '\u263e', desc: 'Marks tomorrow as a rest day: habits and anything burning only, no penalty, streak safe' },
   grace: { name: 'Deadline Grace', cost: 150, icon: '\u231b', desc: 'Pushes your most urgent deadline back by one day \u2014 once, honestly' }
 };
-const OFFER_OFF = 0.3;   // the daily offer takes 30% off
 const RANK_WEIGHT = { E: 1, D: 2, C: 4, B: 7, A: 12, S: 20 };   // how strong a shadow is
 const MANA_PER_DAY = 10, MANA_ON_CLEAR = 10;
 const CLASS_LEVEL = 10;   // a class is chosen here, and every level after gives a skill point
@@ -123,7 +115,7 @@ let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
 let apiKeyCache = null;         // decrypted Anthropic key (memory only)
 let tab = LS.get('ss_tab', 'quests');
-let ui = { showDone: false, showSched: false, openTasks: new Set(), panels: new Set(), dlOpen: '' };
+let ui = { showDone: false, showSched: false, showApps: false, skills: false, openTasks: new Set(), panels: new Set(), dlOpen: '' };
 
 function S() { return db.settings; }
 function touch(o) { o.updatedAt = now(); return o; }
@@ -200,7 +192,7 @@ function enforceHardDeadlines() {
   const plan = db.plans[today()]; if (!plan) return 0;
   let added = 0;
   for (const t of liveTasks().filter(isHardDue)) {
-    if (!isActive(t)) continue;
+    if (!isActive(t) || isApplication(t)) continue;
     if (plan.quests.some(q => q.taskId === t.id)) continue;
     const open = t.subtasks.filter(s => !s.done);
     const sub = open.length ? open[0] : null;
@@ -290,6 +282,9 @@ function newTask(title, extra = {}) {
   db.tasks[t.id] = t; return t;
 }
 const liveTasks = () => Object.values(db.tasks).filter(t => !t.deleted);
+// job applications and opportunity applications: worked through from the Tasks screen, never assigned as quests
+const APP_ORIGINS = ['job', 'opportunity'];
+const isApplication = t => APP_ORIGINS.includes(t.origin);
 function isActive(t) { return !t.deleted && !t.done && (!t.nextDay || t.nextDay <= today()); }
 function isScheduled(t) { return !t.deleted && !t.done && t.nextDay && t.nextDay > today(); }
 function repeatLabel(r) {
@@ -579,7 +574,7 @@ function applyPlan(p, source) {
       if (tt && !t.subtasks.some(x => norm2(x.title) === norm2(tt))) t.subtasks.push({ id: uid(), title: tt, done: false });
     }
     if (s.rank && RANKS.includes(s.rank)) t.rank = s.rank;
-    if (t.subtasks.length >= 4) t.dungeon = true; // big multi-step task → dungeon
+    if (t.subtasks.length >= 4 && !isApplication(t)) t.dungeon = true; // big multi-step task → dungeon
     touch(t);
   }
   // 2) updates (rank/stat/deadline suggestions)
@@ -621,7 +616,7 @@ function applyPlan(p, source) {
 }
 function scoreTasks() {
   const d = today();
-  return liveTasks().filter(isActive).map(t => {
+  return liveTasks().filter(t => isActive(t) && !isApplication(t)).map(t => {
     let score = RANKS.indexOf(t.rank) * 2;
     if (t.deadline) { const days = (Date.parse(t.deadline) - Date.parse(d)) / 864e5; score += days < 0 ? 30 : days <= 1 ? 20 : days <= 3 ? 10 : days <= 7 ? 4 : 0; }
     if (t.pinDay === d) score += 50; if (t.origin === 'penalty') score += 60; if (t.repeat?.type !== 'none') score += 8;
@@ -695,6 +690,7 @@ function ensurePlan() {
 }
 // one button: put a task (or one subtask) into today's quests, or take it back out
 function toggleToday(t, subId) {
+  if (isApplication(t)) return toast('Applications are worked through from Tasks, not as quests');
   const plan = ensurePlan();
   // a task with unfinished subtasks is assigned one step at a time, not as a whole
   if (!subId) {
@@ -892,7 +888,7 @@ function acceptPaid(date, ref) {
   const steps = o.subtasks.length ? o.subtasks
     : ['Read the posting properly', 'Tailor the CV for it', 'Write the message', 'Send the application', 'Follow up in a week'];
   const t = newTask(o.title + (o.company ? ' — ' + o.company : ''), {
-    origin: 'job', rank: 'C', stat: 'PER', dungeon: true, url: o.url, deadline: o.deadline || '',
+    origin: 'job', rank: 'C', stat: 'PER', url: o.url, deadline: o.deadline || '',
     notes: [o.why, o.pay, o.place, o.kind].filter(Boolean).join(' · ')
   });
   t.subtasks = steps.map(x => ({ id: uid(), title: x, done: false }));
@@ -909,11 +905,11 @@ function acceptOpportunity(date, ref) {
   if (o.accepted && db.tasks[o.taskId]) { const t = db.tasks[o.taskId]; t.deleted = true; touch(t); o.accepted = false; o.taskId = ''; touch(r); toast('Dropped'); return save(); }
   const t = newTask(o.title, {
     origin: 'opportunity', rank: o.rank, stat: o.stat, deadline: o.deadline || '', url: o.url,
-    notes: [o.why, o.place, o.cost].filter(Boolean).join(' · '), dungeon: o.subtasks.length >= 3
+    notes: [o.why, o.place, o.cost].filter(Boolean).join(' · ')
   });
   t.subtasks = o.subtasks.map(x => ({ id: uid(), title: x, done: false }));
   o.accepted = true; o.dismissed = false; o.taskId = t.id; touch(r);
-  sfx('level'); popup({ cls: 'levelup', title: 'Dungeon Opened', text: esc(o.title), reward: o.deadline ? 'Gate closes ' + esc(fmtDay(o.deadline)) : '' });
+  sfx('level'); popup({ cls: 'levelup', title: 'Application Opened', text: esc(o.title), reward: o.deadline ? 'Closes ' + esc(fmtDay(o.deadline)) : '' });
   save();
 }
 function dismissOpportunity(date, ref) {
@@ -1479,12 +1475,6 @@ function viewQuests(p) {
   // weekly review, opportunities and side quests — three collapsed panels
   const rev = latestReview();
   if (rev) {
-    h += panel('review', 'WEEKLY REVIEW', null, `
-      ${rev.summary ? `<div class="sys-msg">${esc(rev.summary)}</div>` : ''}
-      ${rev.wins?.length ? `<div class="rev-list"><b>Cleared</b>${rev.wins.map(w => `<div>+ ${esc(w)}</div>`).join('')}</div>` : ''}
-      ${rev.slips?.length ? `<div class="rev-list slip"><b>Slipped</b>${rev.slips.map(w => `<div>− ${esc(w)}</div>`).join('')}</div>` : ''}
-      ${rev.focus ? `<div class="bonus-box">Focus for next week: ${esc(rev.focus)}</div>` : ''}
-      <p class="muted" style="font-size:12px;margin:10px 0 0">${esc(fmtDay(rev.date))}</p>`, '⚑');
     const opps = (rev.opportunities || []).filter(o => !o.dismissed);
     if (opps.length) h += panel('opps', 'OPPORTUNITIES', opps.filter(o => !o.accepted).length || '✓',
       opps.map(o => `<div class="opp ${o.accepted ? 'on' : ''}">
@@ -1509,7 +1499,7 @@ function viewQuests(p) {
     ${S().standing ? `<p class="muted" style="font-size:13px;margin:8px 0 0">Standing orders: ${esc(S().standing)}</p>` : ''}</div></div>`;
   // penalty + pinned + overdue quick list
   const urgent = liveTasks().filter(t => isActive(t) && (t.origin === 'penalty' || (t.deadline && t.deadline <= d)) && !(plan?.quests || []).some(q => q.taskId === t.id));
-  if (urgent.length) { h += `<div class="section-title">URGENT</div>` + urgent.map(taskRow).join(''); }
+  if (urgent.length) { h += `<div class="section-title">URGENT</div>` + urgent.map(t => taskRow(t)).join(''); }
   if (plan) h += `<div class="row" style="justify-content:center;margin-top:10px">${db.security?.apiKey ? `<button class="btn small ghost" data-act="regen">↻ Re-plan with Haiku (1 request)</button>` : `<button class="btn small ghost" data-act="genLocalForce">↻ Re-pick (no AI)</button>`}</div>`;
   return h;
 }
@@ -1520,7 +1510,7 @@ function subList(t) {
     return `<div class="sub ${sub.done ? 'done' : ''}">
       <input type="checkbox" class="chk small" data-act="subToggle" data-id="${t.id}" data-sub="${sub.id}" ${sub.done ? 'checked' : ''}>
       <span class="grow">${esc(sub.title)}</span>
-      ${!sub.done ? `<button class="icon-btn ${on ? 'on' : ''}" data-act="toToday" data-id="${t.id}" data-sub="${sub.id}" title="${on ? 'Remove this step from today' : 'Add this step to today'}">${on ? ICON.added : ICON.add}</button>` : ''}
+      ${!sub.done && !isApplication(t) ? `<button class="icon-btn ${on ? 'on' : ''}" data-act="toToday" data-id="${t.id}" data-sub="${sub.id}" title="${on ? 'Remove this step from today' : 'Add this step to today'}">${on ? ICON.added : ICON.add}</button>` : ''}
     </div>`;
   }).join('')}</div>`;
 }
@@ -1530,7 +1520,7 @@ function deadlineBar(t) {
     <input type="date" class="dlinp" data-dl="${t.id}" value="${esc(t.deadline)}" title="Pick a date">
     ${t.deadline ? `<button class="chip sm x" data-act="dlSet" data-id="${t.id}" data-sub="clear">clear</button>` : ''}</div>`;
 }
-function taskRow(t) {
+function taskRow(t, asApp) {
   const d = today(); const subDone = t.subtasks.filter(s => s.done).length;
   const meta = [];
   if (t.deadline) meta.push(`<button class="${deadlineClass(t.deadline)}" data-act="dlOpen" data-id="${t.id}" title="${esc(fmtDay(t.deadline))} — tap to change">\u231b ${esc(deadlineLabel(t.deadline))}</button>`);
@@ -1543,15 +1533,16 @@ function taskRow(t) {
   meta.push(`<span>${t.stat}</span>`);
   if (t.hint) meta.push(`<span class="hint-chip">${ICON.msg} ${esc(t.hint)}</span>`);
   if (t.url) meta.push(`<a class="link-chip" href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">open ↗</a>`);
+  if (asApp && t.subtasks.length) meta.unshift(`<span class="appstep">${subDone}/${t.subtasks.length} steps</span>`);
   const inToday = inQuests(t.id) || t.subtasks.some(x => inQuests(t.id, x.id));
   const open = ui.openTasks.has(t.id);
-  return `<div class="task-wrap ${open ? 'open' : ''}"><div class="task ${t.done ? 'done' : ''}">
+  return `<div class="task-wrap ${open ? 'open' : ''} ${asApp ? 'app' : ''}"><div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
     ${t.subtasks.length ? `<button class="steps-btn ${open ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}" title="Steps">${t.subtasks.filter(x => x.done).length}/${t.subtasks.length} <i>${open ? '\u25be' : '\u25b8'}</i></button>` : ''}
     ${rankBadge(t.rank)}
     ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
-    ${!t.done ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
+    ${!t.done && !isApplication(t) ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
     <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>
     ${ui.dlOpen === t.id ? deadlineBar(t) : ''}
     ${open ? subList(t) : ''}</div>`;
@@ -1585,15 +1576,23 @@ function dungeonCard(t) {
 }
 function viewTasks() {
   const all = liveTasks();
-  const dungeons = all.filter(t => t.dungeon && isActive(t));
+  const apps = all.filter(t => isApplication(t) && isActive(t));
+  const dungeons = all.filter(t => t.dungeon && isActive(t) && !isApplication(t));
   const order = (a, b) => (a.deadline || '9999') .localeCompare(b.deadline || '9999') || RANKS.indexOf(b.rank) - RANKS.indexOf(a.rank) || a.createdAt - b.createdAt;
-  const active = all.filter(t => isActive(t) && !t.dungeon).sort(order), sched = all.filter(isScheduled).sort((a, b) => a.nextDay.localeCompare(b.nextDay)), done = all.filter(t => t.done).sort((a, b) => b.doneAt - a.doneAt);
+  const active = all.filter(t => isActive(t) && !t.dungeon && !isApplication(t)).sort(order);
+  const sched = all.filter(isScheduled).sort((a, b) => a.nextDay.localeCompare(b.nextDay)), done = all.filter(t => t.done).sort((a, b) => b.doneAt - a.doneAt);
   let h = `<div class="add-row"><input id="newTask" placeholder="What must be done?" enterkeyhint="done" autocomplete="off"><button class="btn primary" data-act="add">+</button></div>`;
+  if (apps.length) {
+    const openSteps = apps.reduce((n, t) => n + t.subtasks.filter(x => !x.done).length, 0);
+    h += `<div class="section-title toggle" data-act="tgApps">APPLICATIONS <span>${apps.length} \u00b7 ${openSteps} step${openSteps === 1 ? '' : 's'} left ${ui.showApps ? '\u25be' : '\u25b8'}</span></div>`;
+    if (ui.showApps) h += apps.sort(order).map(t => taskRow(t, true)).join('')
+      + `<p class="muted" style="font-size:12px;margin:2px 4px 10px">Jobs and opportunities you accepted. They never become quests \u2014 open the steps and tick them off here as you go.</p>`;
+  }
   if (dungeons.length) h += `<div class="section-title">DUNGEONS <span>${dungeons.length}</span></div>` + dungeons.map(dungeonCard).join('');
   h += `<div class="section-title">ACTIVE <span>${active.length}</span></div>`;
-  h += active.length ? active.map(taskRow).join('') : `<div class="empty">No tasks. Write what you have to do above.</div>`;
-  if (sched.length) { h += `<div class="section-title toggle" data-act="tgSched">SCHEDULED <span>${sched.length} ${ui.showSched ? '▾' : '▸'}</span></div>`; if (ui.showSched) h += sched.map(taskRow).join(''); }
-  if (done.length) { h += `<div class="section-title toggle" data-act="tgDone">COMPLETED <span>${done.length} ${ui.showDone ? '▾' : '▸'}</span></div>`; if (ui.showDone) h += done.slice(0, 60).map(taskRow).join(''); }
+  h += active.length ? active.map(t => taskRow(t)).join('') : `<div class="empty">No tasks. Write what you have to do above.</div>`;
+  if (sched.length) { h += `<div class="section-title toggle" data-act="tgSched">SCHEDULED <span>${sched.length} ${ui.showSched ? '▾' : '▸'}</span></div>`; if (ui.showSched) h += sched.map(t => taskRow(t)).join(''); }
+  if (done.length) { h += `<div class="section-title toggle" data-act="tgDone">COMPLETED <span>${done.length} ${ui.showDone ? '▾' : '▸'}</span></div>`; if (ui.showDone) h += done.slice(0, 60).map(t => taskRow(t)).join(''); }
   return h;
 }
 function classCard(p) {
@@ -1606,76 +1605,15 @@ function classCard(p) {
   return `<div class="class-box"><div class="row" style="justify-content:space-between"><b>${esc(c.name)}</b>
       <span class="${p.skillPoints ? 'pts' : 'muted'}">${p.skillPoints} skill point${p.skillPoints === 1 ? '' : 's'}</span></div>
     <p class="muted" style="font-size:13px;margin:4px 0 10px">${esc(c.desc)}</p>
-    ${list.map(([id, sk]) => { const r = skillRank(id); return `<div class="skill ${r ? 'on' : ''}">
+    <button class="steps-btn ${ui.skills ? 'on' : ''}" data-act="tgSkills">Skills ${list.filter(([id]) => skillRank(id)).length}/${list.length}${p.skillPoints ? ` \u00b7 ${p.skillPoints} to spend` : ''} <i>${ui.skills ? '\u25be' : '\u25b8'}</i></button>
+    ${ui.skills ? list.map(([id, sk]) => { const r = skillRank(id); return `<div class="skill ${r ? 'on' : ''}">
       <div class="grow"><b>${esc(sk.name)}</b> <span class="muted">${r}/${sk.max}</span><div class="muted" style="font-size:13px">${esc(sk.desc)}</div></div>
-      <button class="btn small ${p.skillPoints && r < sk.max ? 'primary' : ''}" data-act="learn" data-id="${id}" ${p.skillPoints && r < sk.max ? '' : 'disabled'}>+</button></div>`; }).join('')}
-  </div>`;
-}
-// ---------- the hologram: a figure drawn from your own stats, nothing pre-made
-const FORM_NAMES = { E: 'Unverified outline', D: 'Reinforced frame', C: 'Plated', B: 'Cloaked', A: 'Shadow-wreathed', S: 'Crowned', National: 'Sovereign', Monarch: 'Monarch of Shadows' };
-function hologram(p) {
-  const st = p.stats;
-  const stage = HUNTER_RANKS.findIndex(([, r]) => r === p.hunter);          // 0 = E … 7 = Monarch
-  const sw = 17 + Math.min(15, st.STR / 5);                                 // shoulders widen with STR
-  const wa = 10 + Math.min(7, st.VIT / 8);                                  // waist thickens with VIT
-  const lw = Math.max(2.3, 5.4 - Math.min(2.9, st.AGI / 28)).toFixed(1);    // limbs thin out with AGI
-  const halo = (17 + Math.min(14, st.INT / 8)).toFixed(1);                  // the mind ring grows with INT
-  const marks = Math.min(6, Math.floor(st.PER / 18));                       // PER puts marks in orbit
-  const core = (4 + Math.min(4, st.VIT / 14)).toFixed(1);
-  const X = 60, SY = 76, WY = 128, HY = 134, FY = 206;
-  const g = [];
-  // head, neck, torso, limbs — the frame everyone has
-  g.push(`<circle class="hl" cx="${X}" cy="44" r="13"/>`);
-  g.push(`<path class="hl" d="M${X} 57v${SY - 57}"/>`);
-  g.push(`<path class="hl torso" d="M${X - sw} ${SY} L${X + sw} ${SY} L${X + wa} ${WY} L${X - wa} ${WY} Z"/>`);
-  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X - sw + 2} ${SY + 2} L${X - sw - 3} ${WY + 4}"/>`);
-  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X + sw - 2} ${SY + 2} L${X + sw + 3} ${WY + 4}"/>`);
-  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X - wa + 1} ${HY} L${X - wa - 2} ${FY}"/>`);
-  g.push(`<path class="hl limb" style="stroke-width:${lw}" d="M${X + wa - 1} ${HY} L${X + wa + 2} ${FY}"/>`);
-  // the core, brighter the healthier you are
-  g.push(`<circle class="core" cx="${X}" cy="94" r="${core}"/>`);
-  g.push(`<circle class="core-ring" cx="${X}" cy="94" r="${+core + 5}"/>`);
-  // the mind ring
-  g.push(`<ellipse class="halo" cx="${X}" cy="26" rx="${halo}" ry="${(+halo / 3.4).toFixed(1)}"/>`);
-  // PER marks in orbit
-  for (let i = 0; i < marks; i++) {
-    const a = (i / Math.max(1, marks)) * Math.PI * 2;
-    g.push(`<circle class="mark" cx="${(X + Math.cos(a) * (+halo + 7)).toFixed(1)}" cy="${(26 + Math.sin(a) * (+halo / 3.2 + 4)).toFixed(1)}" r="1.9" style="animation-delay:${(i * 0.3).toFixed(1)}s"/>`);
-  }
-  // what the ranks add on top
-  if (stage >= 1) { g.push(`<path class="hl thin" d="M${X - wa - 2} ${(SY + WY) / 2} h${(wa + 2) * 2}"/><path class="hl thin" d="M${X - wa - 4} ${(SY + WY) / 2 + 12} h${(wa + 4) * 2}"/>`); }
-  if (stage >= 2) { g.push(`<path class="hl plate" d="M${X - sw - 4} ${SY + 1} q${sw / 2} -11 ${sw - 1} 0"/><path class="hl plate" d="M${X + sw + 4} ${SY + 1} q${-sw / 2} -11 ${-(sw - 1)} 0"/>`); }
-  if (stage >= 3) { g.push(`<path class="cloak" d="M${X - sw} ${SY + 2} C${X - sw - 20} ${SY + 50} ${X - sw - 14} ${FY - 24} ${X - wa - 10} ${FY - 6} L${X + wa + 10} ${FY - 6} C${X + sw + 14} ${FY - 24} ${X + sw + 20} ${SY + 50} ${X + sw} ${SY + 2} Z"/>`); }
-  if (stage >= 4) for (let i = 0; i < 5; i++) {
-    const wx = X - 34 + i * 17;
-    g.push(`<path class="wisp" style="animation-delay:${(i * 0.45).toFixed(2)}s" d="M${wx} ${FY + 4} q4 -14 0 -26 q-4 -10 2 -18"/>`);
-  }
-  if (stage >= 5) g.push(`<path class="crown" d="M${X - 13} 36 L${X - 13} 25 L${X - 6.5} 31 L${X} 21 L${X + 6.5} 31 L${X + 13} 25 L${X + 13} 36 Z"/>`);
-  if (stage >= 6) g.push(`<ellipse class="sov" cx="${X}" cy="120" rx="46" ry="92"/>`);
-  if (stage >= 7) g.push(`<ellipse class="sov deep" cx="${X}" cy="120" rx="54" ry="104"/>`);
-  // the plate it stands on
-  g.push(`<ellipse class="base" cx="${X}" cy="${FY + 8}" rx="40" ry="9"/><ellipse class="base in" cx="${X}" cy="${FY + 8}" rx="24" ry="5.5"/>`);
-  const drivers = `STR ${st.STR} → frame · VIT ${st.VIT} → core · AGI ${st.AGI} → build · INT ${st.INT} → halo · PER ${st.PER} → marks`;
-  const nextAt = HUNTER_RANKS[stage + 1];
-  return `<div class="holo-wrap ${p.cls || 'noclass'} r${p.hunter.toLowerCase()}">
-    <svg class="holo" viewBox="0 0 120 250" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      <defs><linearGradient id="hsweep" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="currentColor" stop-opacity="0"/><stop offset=".5" stop-color="currentColor" stop-opacity=".75"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-      <g class="figure">${g.join('')}</g>
-      <rect class="scan" x="0" y="0" width="120" height="22" fill="url(#hsweep)"/>
-    </svg>
-    <div class="holo-side">
-      <div class="holo-name">${esc(FORM_NAMES[p.hunter] || p.hunter)}</div>
-      <div class="holo-sub">${esc(p.hunter)}-Rank · Lv.${p.level}${p.cls && CLASSES[p.cls] ? ' · ' + esc(CLASSES[p.cls].name) : ''}${p.awakenings ? ' · ✦' + p.awakenings : ''}</div>
-      <div class="holo-drv">${esc(drivers)}</div>
-      ${nextAt ? `<div class="holo-next">The form changes again at level ${nextAt[0]} — ${esc(nextAt[1])}-Rank</div>` : `<div class="holo-next">There is nothing above this form.</div>`}
-    </div>
+      <button class="btn small ${p.skillPoints && r < sk.max ? 'primary' : ''}" data-act="learn" data-id="${id}" ${p.skillPoints && r < sk.max ? '' : 'disabled'}>+</button></div>`; }).join('') : ''}
   </div>`;
 }
 function viewStatus(p) {
   const title = TITLES.find(t => t.id === S().title && t.test(p));
   let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u25c9</span>STATUS</div><div class="sys-body">
-    ${hologram(p)}
     <div class="player"><div class="lvl-big">${p.level}<small>LEVEL</small></div>
     <div class="kv"><b>Name</b><span>${esc(S().name)}</span><b>Rank</b><span>${p.hunter}-Rank Hunter${p.awakenings ? ` <span style="color:var(--purple)">✦${p.awakenings}</span>` : ''}</span><b>Title</b><span>${title ? esc(title.name) : '<span class="muted">none</span>'}</span><b>Streak</b><span>${p.streak} day${p.streak === 1 ? '' : 's'} (best ${p.bestStreak})</span><b>Gold</b><span style="color:var(--gold)">${p.gold} G</span>${p.awakenings ? `<b>Bonus</b><span style="color:var(--purple)">+${Math.round(p.awakenings * AWAKEN_BONUS * 100)}% EXP</span>` : ''}${p.potionActive ? `<b>Buff</b><span style="color:var(--green)">⚗ Double EXP today</span>` : ''}</div></div>
     <div class="section-title">EXP <span>${p.cur} / ${p.need}</span></div><div class="progress xp"><div style="width:${p.cur / p.need * 100}%"></div></div>
@@ -1690,7 +1628,6 @@ function viewStatus(p) {
   const mx = Math.max(1, ...days.map(d => p.byDay[d] || 0));
   h += `<div class="sys-window card"><div class="sys-head">LAST 7 DAYS</div><div class="sys-body"><div class="bars">${days.map(d => `<div class="b"><span>${p.byDay[d] || 0}</span><i style="height:${(p.byDay[d] || 0) / mx * 70}px"></i><span>${DAYS[weekday(d)]}</span></div>`).join('')}</div>
     <p class="muted" style="font-size:14px;margin:10px 0 0">Tasks cleared: <b>${p.doneCount}</b> · Daily quests cleared: <b>${p.dailyClears}</b> · Total EXP: <b>${p.xp}</b></p></div></div>`;
-  h += `<div class="row" style="justify-content:center;margin:4px 0 16px"><button class="btn" data-act="cert">⬓ Export hunter license</button></div>`;
   h += `<div class="sys-window card"><div class="sys-head">TITLES</div><div class="sys-body"><div class="titles">${TITLES.map(t => { const ok = t.test(p); return `<button class="title-badge ${ok ? '' : 'locked'} ${S().title === t.id && ok ? 'eq' : ''}" data-act="equip" data-id="${t.id}" ${ok ? '' : 'disabled'}>${esc(t.name)}<small>${esc(t.desc)}</small></button>`; }).join('')}</div></div></div>`;
   // shadow army — an immortal record; fallen shadows only dim until mana raises them
   const byRank = {}; p.shadows.forEach(sh => byRank[sh.rank] = (byRank[sh.rank] || 0) + 1);
@@ -1719,6 +1656,7 @@ function viewStatus(p) {
     ${p.shadows.length > 24 ? `<button class="btn small ghost" data-act="tgShadows" style="margin-top:8px">${ui.allShadows ? 'Show less' : 'Show all ' + p.shadows.length}</button>` : ''}`
       : `<div class="empty">Your army is empty. Arise.</div>`}
   </div></div>`;
+  h += `<div class="row" style="justify-content:center;margin:18px 0 6px"><button class="btn" data-act="cert">\u2b13 Export hunter license</button></div>`;
   return h;
 }
 function analytics(p) {
@@ -1767,11 +1705,21 @@ function bars(items, opts = {}) {
     <i style="height:${Math.max(2, i.v / max * 72)}px${i.color ? ';background:' + i.color : ''}"></i>
     <span class="bv">${i.v ? i.v + (opts.unit || '') : ''}</span><span class="bl">${esc(i.label)}</span></div>`).join('')}</div>`;
 }
+// the written part of Friday's review — it reads like analysis, so it lives with the analysis
+function reviewCard() {
+  const rev = latestReview(); if (!rev) return '';
+  return `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u2691</span>WEEKLY REVIEW<span class="grow"></span><span class="pcount">${esc(rev.weekOf || fmtDay(rev.date))}</span></div><div class="sys-body">
+    ${rev.summary ? `<div class="sys-msg">${esc(rev.summary)}</div>` : ''}
+    ${rev.wins?.length ? `<div class="rev-list"><b>Cleared</b>${rev.wins.map(w => `<div>+ ${esc(w)}</div>`).join('')}</div>` : ''}
+    ${rev.slips?.length ? `<div class="rev-list slip"><b>Slipped</b>${rev.slips.map(w => `<div>\u2212 ${esc(w)}</div>`).join('')}</div>` : ''}
+    ${rev.focus ? `<div class="bonus-box">Focus for next week: ${esc(rev.focus)}</div>` : ''}
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Written ${esc(fmtDay(rev.date))}. What you can accept from it \u2014 side quests and opportunities \u2014 is on the Quests screen.</p></div></div>`;
+}
 function viewAnalytics(p) {
   const a = analytics(p);
   const hourLabels = a.hours.map((v, i) => ({ label: String(i * 2).padStart(2, '0'), v }));
   const best = a.hours.indexOf(Math.max(...a.hours));
-  let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◴</span>WHEN YOU ACTUALLY WORK</div><div class="sys-body">
+  let h = reviewCard() + `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◴</span>WHEN YOU ACTUALLY WORK</div><div class="sys-body">
     ${bars(hourLabels)}
     <p class="muted" style="font-size:14px;margin:10px 0 0">${a.total ? `Strongest stretch: <b style="color:var(--accent)">${String(best * 2).padStart(2, '0')}:00–${String(best * 2 + 2).padStart(2, '0')}:00</b>. Quests and subtasks counted: ${a.total}.` : 'Nothing recorded yet.'}</p></div></div>`;
 
@@ -1847,35 +1795,15 @@ function viewLog(p) {
   } else h += `<p class="muted" style="text-align:center">Tap a day to see what you did.</p>`;
   return h;
 }
-// one of your own rewards, 30% off, the same one on every device all day
-function dailyOffer(items) {
-  if (items.length < 2) return null;
-  const pick = seededPick(items.map(i => i.id), 1, 'offer-' + today())[0];
-  const it = items.find(i => i.id === pick); if (!it) return null;
-  const cost = Math.max(1, Math.round(it.cost * (1 - OFFER_OFF)));
-  const taken = Object.values(db.log).some(e => e.type === 'buy' && !e.deleted && e.offer === today());
-  return { it, cost, taken };
-}
 function viewShop(p) {
   const items = Object.values(db.shop).filter(i => !i.deleted).sort((a, b) => a.cost - b.cost);
   const buys = Object.values(db.log).filter(e => e.type === 'buy' && !e.deleted).sort((a, b) => b.at - a.at);
   const spent = buys.reduce((n, b) => n + (+b.cost || 0), 0);
-  const offer = dailyOffer(items);
-  const taken = new Set(items.map(i => norm(i.title)));
-  const temps = SHOP_TEMPLATES.filter(([t]) => !taken.has(norm(t)));
   let h = `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u25c6</span>SHOP <span style="margin-left:auto;color:var(--gold)">${p.gold} G</span></div><div class="sys-body">
-    <div class="econ"><div><b>${p.goldEarned}</b><small>earned</small></div><div><b>${spent}</b><small>spent</small></div><div><b style="color:var(--gold)">${p.gold}</b><small>in hand</small></div></div>
-    <p class="muted">Gold is yours to spend on real life. Write what you actually want \u2014 the price is yours to set too.</p>
+    <p class="muted" style="margin-top:0">Gold is yours to spend on real life. Write what you actually want \u2014 the price is yours to set too.</p>
     <div class="row"><input id="shopName" placeholder="Reward (e.g. 1h gaming)" class="grow"><input id="shopCost" type="number" placeholder="G" style="width:90px" min="1"><button class="btn primary" data-act="shopAdd">+</button></div>`;
-  h += items.length ? items.map(i => `<div class="shop-item"><div class="grow">${esc(i.title)}</div><span class="price">${i.cost} G</span><button class="btn small ${p.gold >= i.cost ? 'primary' : ''}" data-act="buy" data-id="${i.id}" ${p.gold >= i.cost ? '' : 'disabled'}>Buy</button><button class="icon-btn" data-act="shopDel" data-id="${i.id}">\u2715</button></div>`).join('') : `<div class="empty">No rewards yet \u2014 take one from below to start.</div>`;
-  if (temps.length) h += `<div class="section-title" style="margin-top:14px">TAKE ONE AS IT IS</div>
-    <div class="chips wrap">${temps.slice(0, 12).map(([t, c], i) => `<button class="chip sm" data-act="shopTemp" data-id="${i}" data-sub="${esc(t)}" data-cost="${c}">${esc(t)} <b style="color:var(--gold)">${c}G</b></button>`).join('')}</div>
-    <p class="muted" style="font-size:12px;margin:6px 0 0">Tap to add it to your shelf. Prices are a starting point \u2014 delete and re-add at your own.</p>`;
+  h += items.length ? items.map(i => `<div class="shop-item"><div class="grow">${esc(i.title)}</div><span class="price">${i.cost} G</span><button class="btn small ${p.gold >= i.cost ? 'primary' : ''}" data-act="buy" data-id="${i.id}" ${p.gold >= i.cost ? '' : 'disabled'}>Buy</button><button class="icon-btn" data-act="shopDel" data-id="${i.id}">\u2715</button></div>`).join('') : `<div class="empty">No rewards yet. Write one above \u2014 anything you actually want.</div>`;
   h += `</div></div>`;
-  if (offer) h += `<div class="sys-window card offer-card"><div class="sys-head"><span class="sys-icon">\u2726</span>TODAY'S OFFER</div><div class="sys-body">
-    <div class="shop-item"><div class="grow"><b>${esc(offer.it.title)}</b><div class="muted" style="font-size:13px">${offer.taken ? 'Already taken today.' : 'Today only, and only once.'}</div></div>
-      <span class="price old">${offer.it.cost} G</span><span class="price">${offer.cost} G</span>
-      <button class="btn small ${!offer.taken && p.gold >= offer.cost ? 'primary' : ''}" data-act="buyOffer" data-id="${offer.it.id}" ${!offer.taken && p.gold >= offer.cost ? '' : 'disabled'}>${offer.taken ? 'taken' : 'Buy'}</button></div></div></div>`;
   h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">\u229b</span>SYSTEM SERVICES</div><div class="sys-body">
     <p class="muted" style="margin-top:0">Gold buys you air, never power. Skip tokens, shields and potions are still summoned from the army with mana.</p>
     ${Object.entries(SERVICES).map(([k, sv]) => `<div class="service"><span class="sic">${sv.icon}</span><div class="grow"><b>${esc(sv.name)}</b><div class="muted" style="font-size:13px">${esc(sv.desc)}</div></div>
@@ -1884,7 +1812,8 @@ function viewShop(p) {
     <p class="muted" style="margin-top:0">Paid with mana, which gathers ${p.manaPerDay} a day and +${MANA_ON_CLEAR} for every daily quest you clear.</p>
     ${Object.entries(SUMMONS).map(([k, it]) => `<div class="service"><span class="sic mp">\u25c8</span><div class="grow"><b>${esc(it.name)}</b><div class="muted" style="font-size:13px">${esc(it.desc)}</div></div>
       <span class="price mp">${it.cost} MP</span><button class="btn small ${p.mana >= it.cost ? 'primary' : ''}" data-act="summon" data-id="${k}" ${p.mana >= it.cost ? '' : 'disabled'}>Arise</button></div>`).join('')}</div></div>`;
-  if (buys.length) h += `<div class="section-title">PURCHASE LOG <span>${spent} G total</span></div>` + buys.slice(0, 20).map(b => `<div class="shop-item"><div class="grow">${esc(b.title)}<div class="muted" style="font-size:13px">${esc(fmtDay(b.day))}</div></div><span class="price">-${b.cost} G</span></div>`).join('');
+  h += `<div class="econ"><div><b>${p.goldEarned}</b><small>earned</small></div><div><b>${spent}</b><small>spent</small></div><div><b style="color:var(--gold)">${p.gold}</b><small>in hand</small></div></div>`;
+  if (buys.length) h += `<div class="section-title">PURCHASE LOG <span>${buys.length}</span></div>` + buys.slice(0, 20).map(b => `<div class="shop-item"><div class="grow">${esc(b.title)}<div class="muted" style="font-size:13px">${esc(fmtDay(b.day))}</div></div><span class="price">-${b.cost} G</span></div>`).join('');
   return h;
 }
 function viewSettings() {
@@ -2069,6 +1998,8 @@ document.addEventListener('click', async e => {
       value: t.hint || '', ok: 'Save'
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
     case 'toToday': return toggleToday(t, b.dataset.sub || null);
+    case 'tgSkills': ui.skills = !ui.skills; return render();
+    case 'tgApps': ui.showApps = !ui.showApps; return render();
     case 'dlOpen': ui.dlOpen = ui.dlOpen === id ? '' : id; return render();
     case 'dlSet': { const k = b.dataset.sub; ui.dlOpen = ''; setDeadline(t, k === 'clear' ? '' : chipDate(k)); return; }
     case 'partyNew': {
@@ -2153,17 +2084,6 @@ document.addEventListener('click', async e => {
     }
     case 'shopAdd': { const n = $('#shopName').value.trim(), c = +$('#shopCost').value; if (!n || !(c > 0)) return toast('Name and price needed'); const it = touch({ id: uid(), title: n, cost: Math.round(c) }); db.shop[it.id] = it; return save(); }
     case 'shopDel': { const it = db.shop[id]; it.deleted = true; touch(it); return save(); }
-    case 'shopTemp': { const it = touch({ id: uid(), title: b.dataset.sub, cost: +b.dataset.cost || 50 }); db.shop[it.id] = it; sfx('tick'); toast('Added to your shelf'); return save(); }
-    case 'buyOffer': {
-      const it = db.shop[id]; if (!it) return;
-      const cost = Math.max(1, Math.round(it.cost * (1 - OFFER_OFF)));
-      if (player().gold < cost) return;
-      if (Object.values(db.log).some(e => e.type === 'buy' && !e.deleted && e.offer === today())) return toast('The offer is used for today');
-      if (!confirmInline(b, 'Confirm?')) return;
-      logAdd({ type: 'buy', title: it.title + ' \u2014 daily offer', cost, itemId: it.id, offer: today() });
-      sfx('done'); popup({ title: 'Offer Claimed', text: esc(it.title), reward: `-${cost} G (saved ${it.cost - cost} G) \u00b7 Enjoy it.` });
-      return save();
-    }
     case 'service': {
       const sv = SERVICES[id]; if (!sv) return;
       if (player().gold < sv.cost) return;

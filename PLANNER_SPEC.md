@@ -28,10 +28,10 @@ If a file named `ai-plan-<today>.json` exists anywhere in Drive, **today is proc
 ```
 ## Paid work in the daily plan
 `"paidOpportunities":[{"ref","title","company","url","why","pay","place","kind":"job|contract|freelance","deadline","subtasks":[...]}]`
-3-5 fresh, verified, currently open: remote jobs and contracts in Python/backend/AI/GPU that accept a contractor registered in Uzbekistan, plus freelance gigs for quick money. Never an invented link, company or salary. Don't repeat what appeared in recent plans' `paid`. Accepting one in the app creates an application dungeon (read the posting → tailor the CV → write → send → follow up).
+3-5 fresh, verified, currently open: remote jobs and contracts in Python/backend/AI/GPU that accept a contractor registered in Uzbekistan, plus freelance gigs for quick money. Never an invented link, company or salary. Don't repeat what appeared in recent plans' `paid`. Accepting one in the app creates a task in its own APPLICATIONS section. **Never put a task whose `origin` is `job` or `opportunity` into `quests`** — not even when it is overdue or due today. He works those from the Tasks screen himself; the app refuses them anyway.
 
 ## Rules
-- **The deadline rule overrides everything.** Every task that is overdue, due today or due tomorrow goes into `quests` no matter what — rest day, time budget, quest cap, standing orders, a bad note, all of it. Give each one a `note` saying why ("overdue — it cannot wait" / "deadline due today"). The app enforces this after reading your file, so a plan that leaves one out is simply corrected; write it in yourself so the wording is yours.
+- **The deadline rule overrides everything.** Every task that is overdue, due today or due tomorrow goes into `quests` no matter what — rest day, time budget, quest cap, standing orders, a bad note, all of it. The one exception: tasks with `origin` `job` or `opportunity` (applications) are never scheduled, whatever their deadline. Give each one a `note` saying why ("overdue — it cannot wait" / "deadline due today"). The app enforces this after reading your file, so a plan that leaves one out is simply corrected; write it in yourself so the wording is yours.
 - These forced quests do **not** count against `dailyMinutes` or `maxQuests`. Fill the rest of the day up to those limits as usual, so habits are not pushed out by a deadline.
 - The minutes of the remaining (non-forced) quests added together must be ≤ `dailyMinutes`, with at most `maxQuests` of them. Priority order: overdue, then deadline ≤ 2 days, then pinned (`pinDay == today`), then penalty tasks, then repeating tasks, then balancing the stats.
 - Big or vague tasks (rank A/S, more than 90 min, or several steps with no subtasks): split them into 3-8 concrete subtasks and assign only 1-2 of those subtasks today, using the exact subtask titles.
@@ -58,7 +58,7 @@ Same `system-db.json`. Look at the last 7 days: `log` (done/sub/bonus/focus by `
 ```
 ## Opportunities (same file)
 `"opportunities":[{"ref","title","url","why","deadline","cost","place","rank","stat","subtasks":[...]}]`
-Real and verified only: free, funded or paid-to-participate; remote, Germany or Uzbekistan; deadline inside 1-3 months; the page opened and checked. Accepting one in the app creates a dungeon with the link, the steps and the deadline; dismissed and untouched ones vanish with the next review. Don't repeat anything already in an earlier review's `opportunities`.
+Real and verified only: free, funded or paid-to-participate; remote, Germany or Uzbekistan; deadline inside 1-3 months; the page opened and checked. Accepting one in the app creates a task in the APPLICATIONS section with the link, the steps and the deadline; it is never scheduled as a quest. Dismissed and untouched ones vanish with the next review. Don't repeat anything already in an earlier review's `opportunities`.
 
 ## Rules for side quests
 - 3-4 of them, for **living**, not productivity: sport with other people, being outdoors, something with friends or family, hands-on or cultural, something restful. Never work, study or chores.
