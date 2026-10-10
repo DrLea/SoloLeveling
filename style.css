@@ -359,3 +359,12 @@ label .ic{width:15px;height:15px;opacity:.85}
 /* ---------- v18: applications section ---------- */
 .task-wrap.app .task{border-left:2px solid rgba(176,124,255,.55)}
 .meta .appstep{color:var(--purple);border-color:rgba(176,124,255,.45)}
+
+/* ---------- v19: the seal ---------- */
+.meta .seal-chip{display:inline-flex;align-items:center;gap:4px;color:var(--purple);border-color:rgba(176,124,255,.45)}
+.meta .seal-chip .ic{width:13px;height:13px}
+.task-wrap.sealed .task{border-left:2px solid rgba(176,124,255,.5);background:
+  repeating-linear-gradient(135deg,transparent,transparent 9px,rgba(176,124,255,.045) 9px,rgba(176,124,255,.045) 18px)}
+.task-wrap.sealed .tt{opacity:.88}
+.chip.on.seal{border-color:var(--purple);color:#e4d4ff;background:rgba(176,124,255,.18);box-shadow:0 0 10px rgba(176,124,255,.35)}
+.chip .ic{width:15px;height:15px}

@@ -2,7 +2,7 @@
 
 A static PWA that you can install on desktop and phone. You don't need a server.
 
-- **Tasks.** Type a task and press Enter, then tick it when it's done. Press the ⌛ chip for a deadline (today / tomorrow / +3 days / +1 week / Saturday / end of month), or type `!tom`, `!3d`, `!fri` at the end of the line. Press ✎ for subtasks, a reward (text and bonus gold), a difficulty rank from E to S, a stat, and a repeat rule. The repeat rules are: daily, certain weekdays, every N days, N days after you finish, or monthly.
+- **Tasks.** Type a task and press Enter, then tick it when it's done. Press the ⌛ chip for a deadline (today / tomorrow / +3 days / +1 week / Saturday / end of month), or type `!tom`, `!3d`, `!fri` at the end of the line. Press ✎ for subtasks, a **Sealed** mark that keeps a task out of the quest system, a reward (text and bonus gold), a difficulty rank from E to S, a stat, and a repeat rule. The repeat rules are: daily, certain weekdays, every N days, N days after you finish, or monthly.
 - **Daily Quest.** Each day the System picks a set of quests you can manage from your tasks. You get a clear reward if you finish them all. If you miss any, a **Penalty Quest** appears the next day. The day resets at 04:00 (UTC+5).
 - **Game layer.** You earn XP and levels, move up through Hunter ranks (E → S → National), and raise five stats (STR/INT/AGI/VIT/PER). You also get streaks, titles to unlock, and a gold **Shop** where you set your own rewards.
 - **Sync** runs through your own Google Drive: `My Drive/SoloSystem/system-db.json`.
@@ -100,6 +100,11 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Paid opportunities.** The 4 AM task now also searches for work: remote jobs and contracts (Python/backend/AI/GPU, contractor-friendly) and freelance gigs. They land in a **PAID OPPORTUNITIES** panel on the Quests screen with company, pay, place and a verified link. **apply** opens an application dungeon (read the posting → tailor the CV → write the message → send → follow up in a week), **✕** dismisses. The list refreshes with each day's plan.
 - **Collapsible panels.** PAID OPPORTUNITIES, WEEKLY REVIEW, OPPORTUNITIES and SIDE QUESTS are collapsed by default with a counter of unhandled items in the header; they fold back when you leave the tab.
 - **Fixed:** sharing a dungeon failed with "Drive 400 — invalid JSON payload" because party files were sent to Drive's metadata endpoint instead of its upload endpoint.
+
+## v19
+- **Sealed tasks.** A **SEALED** chip in the edit screen, next to DUNGEON. A sealed task and every one of its steps is off limits to the quest system: the 4 AM planner skips it, reroll skips it, the deadline rule skips it (even overdue), a plan that names it anyway is ignored, and the ⊕ button disappears from the row and from each step. It stays where it was in ACTIVE, marked with a warded-gate chip, a purple edge and a faint hatch. Claude may still split it into steps and set its rank — it just can't put it in your day. Untick the chip and it goes back to normal.
+- **The System offers the seal.** Push the same quest back to Tasks three times and a notification asks once whether to stop assigning it. "Seal it" marks it; "Not now" is remembered so you are never asked about that task again.
+- Fixed: a quest you pushed back no longer keeps showing the ◈ quest chip on its task row.
 
 ## v18
 - **Applications are out of the quest system.** A paid opportunity you apply to, or an opportunity you accept from the Friday review, becomes a plain task in a collapsible **APPLICATIONS** section on Tasks — no longer a dungeon, never auto-assigned, never rerolled in, not even forced in by its own deadline, and the ⊕ button is gone from it and from its steps. Open the section, open the steps, tick them off as you actually do them. The header counts how many steps are still open.

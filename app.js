@@ -46,7 +46,9 @@ const ICON = {
   play: '<svg viewBox="0 0 24 24" class="ic"><path d="M8 5.5l10 6.5-10 6.5z"/></svg>',
   reroll: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6"/><path d="M17.5 3.5v3.2h-3.2M6.5 20.5v-3.2h3.2"/></svg>',
   back: '<svg viewBox="0 0 24 24" class="ic"><path d="M9 6.5L4.5 11 9 15.5"/><path d="M4.5 11h10a5 5 0 0 1 5 5v2"/></svg>',
-  skip: '<svg viewBox="0 0 24 24" class="ic"><path d="M5 6l8 6-8 6z"/><path d="M18 6v12"/></svg>'
+  skip: '<svg viewBox="0 0 24 24" class="ic"><path d="M5 6l8 6-8 6z"/><path d="M18 6v12"/></svg>',
+  // a warded gate: the System cannot reach through it
+  seal: '<svg viewBox="0 0 24 24" class="ic"><path d="M12 3.4l8.4 8.6-8.4 8.6L3.6 12z"/><path d="M6.6 12h10.8"/></svg>'
 };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const AWAKEN_LEVEL = 30, AWAKEN_BONUS = 0.10;
@@ -192,7 +194,7 @@ function enforceHardDeadlines() {
   const plan = db.plans[today()]; if (!plan) return 0;
   let added = 0;
   for (const t of liveTasks().filter(isHardDue)) {
-    if (!isActive(t) || isApplication(t)) continue;
+    if (!isActive(t) || noQuest(t)) continue;
     if (plan.quests.some(q => q.taskId === t.id)) continue;
     const open = t.subtasks.filter(s => !s.done);
     const sub = open.length ? open[0] : null;
@@ -277,7 +279,7 @@ function newTask(title, extra = {}) {
   const t = {
     id: uid(), title: title.trim(), notes: '', done: false, doneAt: 0, createdAt: now(), updatedAt: now(), deleted: false,
     deadline: '', rank: 'E', stat: guessStat(title), subtasks: [], reward: { text: '', gold: 0 },
-    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, hint: '', url: '', ...extra
+    repeat: { type: 'none', every: 1, days: [] }, nextDay: '', pinDay: '', origin: 'user', dungeon: false, hint: '', url: '', sealed: false, ...extra
   };
   db.tasks[t.id] = t; return t;
 }
@@ -285,6 +287,9 @@ const liveTasks = () => Object.values(db.tasks).filter(t => !t.deleted);
 // job applications and opportunity applications: worked through from the Tasks screen, never assigned as quests
 const APP_ORIGINS = ['job', 'opportunity'];
 const isApplication = t => APP_ORIGINS.includes(t.origin);
+// sealed by hand, or an application: never picked, never forced in, never assignable by you either.
+// Claude may still split and rank a sealed task — it just can't put it in the day.
+const noQuest = t => isApplication(t) || !!t.sealed;
 function isActive(t) { return !t.deleted && !t.done && (!t.nextDay || t.nextDay <= today()); }
 function isScheduled(t) { return !t.deleted && !t.done && t.nextDay && t.nextDay > today(); }
 function repeatLabel(r) {
@@ -599,6 +604,7 @@ function applyPlan(p, source) {
     let subId = null;
     if (q.subtask) { const st = t.subtasks.find(x => norm2(x.title) === norm2(q.subtask)); subId = st ? st.id : null; if (!st) { const ns = { id: uid(), title: q.subtask, done: false }; t.subtasks.push(ns); subId = ns.id; touch(t); } }
     if (t.nextDay && t.nextDay > p.date) { t.nextDay = ''; touch(t); }
+    if (noQuest(t)) continue;   // the seal holds even if the plan asked for it
     quests.push({ taskId, subId, xp: clamp(+q.xp || RANK_XP[t.rank], 5, 400), gold: clamp(+q.gold || Math.round(RANK_XP[t.rank] / 2), 0, 300), minutes: +q.minutes || RANK_MIN[t.rank], note: q.note || '', urgent: !!q.urgent });
   }
   const paid = (p.paidOpportunities || []).map((o, i) => ({
@@ -616,7 +622,7 @@ function applyPlan(p, source) {
 }
 function scoreTasks() {
   const d = today();
-  return liveTasks().filter(t => isActive(t) && !isApplication(t)).map(t => {
+  return liveTasks().filter(t => isActive(t) && !noQuest(t)).map(t => {
     let score = RANKS.indexOf(t.rank) * 2;
     if (t.deadline) { const days = (Date.parse(t.deadline) - Date.parse(d)) / 864e5; score += days < 0 ? 30 : days <= 1 ? 20 : days <= 3 ? 10 : days <= 7 ? 4 : 0; }
     if (t.pinDay === d) score += 50; if (t.origin === 'penalty') score += 60; if (t.repeat?.type !== 'none') score += 8;
@@ -661,11 +667,27 @@ function localPlan() {
 }
 // ---------- quest control: block / reroll / quick add / focus timer
 function questTitle(q) { const t = db.tasks[q.taskId]; if (!t) return '?'; const s = q.subId && t.subtasks.find(x => x.id === q.subId); return s ? s.title : t.title; }
+const SEAL_AFTER = 3;   // blocked this often and the System stops handing it to you
+function blockCount(taskId) {
+  return Object.values(db.plans).filter(pl => !pl.deleted && (pl.quests || []).some(q => q.taskId === taskId && q.blocked)).length;
+}
 function blockQuest(i, reason) {
   const plan = db.plans[today()]; const q = plan?.quests[i]; if (!q) return;
   q.blocked = true; q.reason = (reason || '').slice(0, 200); touch(plan);
   const t = db.tasks[q.taskId]; if (t) { t.pinDay = ''; touch(t); } // stays in Tasks, just not today's quest
   toast('Returned to Tasks — no penalty'); checkDailyClear(); save();
+  // it has come back this many times now — offer to stop assigning it at all
+  if (t && !t.sealed && !t.sealAsked && !noQuest(t)) {
+    const n = blockCount(t.id);
+    if (n >= SEAL_AFTER) {
+      t.sealAsked = true; touch(t); save({ noRender: true });
+      setTimeout(() => popup({
+        title: 'Sealing Offered', text: `<b>${esc(t.title)}</b> has been pushed back ${n} times.<br>The System can stop assigning it and leave it to you.`,
+        reward: 'It stays in Tasks. You run it on your own terms.',
+        action: { label: 'Seal it', fn: () => { t.sealed = true; touch(t); sfx('level'); toast('Sealed'); save(); } }
+      }), 500);
+    }
+  }
 }
 function unblockQuest(i) { const plan = db.plans[today()]; const q = plan?.quests[i]; if (!q) return; q.blocked = false; q.reason = ''; touch(plan); save(); }
 function rerollQuest(i) {
@@ -691,6 +713,7 @@ function ensurePlan() {
 // one button: put a task (or one subtask) into today's quests, or take it back out
 function toggleToday(t, subId) {
   if (isApplication(t)) return toast('Applications are worked through from Tasks, not as quests');
+  if (t.sealed) return toast('This task is sealed — unseal it in \u270e to make it a quest');
   const plan = ensurePlan();
   // a task with unfinished subtasks is assigned one step at a time, not as a whole
   if (!subId) {
@@ -1240,11 +1263,13 @@ function sfx(kind) {
     });
   } catch { }
 }
-function popup({ title, text = '', reward = '', cls = '' }) {
+function popup({ title, text = '', reward = '', cls = '', action = null }) {
   const el = document.createElement('div'); el.className = 'popup ' + cls;
-  el.innerHTML = `<div class="sys-window"><div class="sys-head"><span class="sys-icon">!</span>NOTIFICATION</div><div class="sys-body"><div class="p-title">[${esc(title)}]</div><div class="p-text">${text}</div>${reward ? `<div class="p-reward">${reward}</div>` : ''}<div style="margin-top:14px"><button class="btn small">Confirm</button></div></div></div>`;
-  el.querySelector('button').onclick = () => el.remove();
-  $('#popups').appendChild(el); setTimeout(() => el.remove(), 7000);
+  el.innerHTML = `<div class="sys-window"><div class="sys-head"><span class="sys-icon">!</span>NOTIFICATION</div><div class="sys-body"><div class="p-title">[${esc(title)}]</div><div class="p-text">${text}</div>${reward ? `<div class="p-reward">${reward}</div>` : ''}
+    <div class="row" style="margin-top:14px;justify-content:center">${action ? `<button class="btn small primary" data-p="go">${esc(action.label)}</button>` : ''}<button class="btn small">${action ? 'Not now' : 'Confirm'}</button></div></div></div>`;
+  if (action) el.querySelector('[data-p=go]').onclick = () => { el.remove(); action.fn(); };
+  el.querySelectorAll('button:not([data-p])').forEach(b => { b.onclick = () => el.remove(); });
+  $('#popups').appendChild(el); if (!action) setTimeout(() => el.remove(), 7000);
 }
 let toastT; function toast(msg, ms = 2200) { const t = $('#toast'); t.innerHTML = msg; t.classList.remove('hidden'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.add('hidden'), ms); }
 
@@ -1510,7 +1535,7 @@ function subList(t) {
     return `<div class="sub ${sub.done ? 'done' : ''}">
       <input type="checkbox" class="chk small" data-act="subToggle" data-id="${t.id}" data-sub="${sub.id}" ${sub.done ? 'checked' : ''}>
       <span class="grow">${esc(sub.title)}</span>
-      ${!sub.done && !isApplication(t) ? `<button class="icon-btn ${on ? 'on' : ''}" data-act="toToday" data-id="${t.id}" data-sub="${sub.id}" title="${on ? 'Remove this step from today' : 'Add this step to today'}">${on ? ICON.added : ICON.add}</button>` : ''}
+      ${!sub.done && !noQuest(t) ? `<button class="icon-btn ${on ? 'on' : ''}" data-act="toToday" data-id="${t.id}" data-sub="${sub.id}" title="${on ? 'Remove this step from today' : 'Add this step to today'}">${on ? ICON.added : ICON.add}</button>` : ''}
     </div>`;
   }).join('')}</div>`;
 }
@@ -1528,21 +1553,22 @@ function taskRow(t, asApp) {
   if (t.repeat?.type !== 'none') meta.push(`<span>${esc(repeatLabel(t.repeat))}</span>`);
   if (t.nextDay && t.nextDay > d) meta.push(`<span>next ${esc(fmtDay(t.nextDay))}</span>`);
   if (t.reward?.text) meta.push(`<span>🎁 ${esc(t.reward.text)}</span>`);
-  if (db.plans[d]?.quests.some(q => q.taskId === t.id)) meta.push(`<span class="today">◈ quest</span>`);
+  if (db.plans[d]?.quests.some(q => q.taskId === t.id && !q.blocked)) meta.push(`<span class="today">◈ quest</span>`);
   if (t.origin === 'penalty') meta.push(`<span class="over">penalty</span>`);
+  if (t.sealed) meta.push(`<span class="seal-chip">${ICON.seal} sealed</span>`);
   meta.push(`<span>${t.stat}</span>`);
   if (t.hint) meta.push(`<span class="hint-chip">${ICON.msg} ${esc(t.hint)}</span>`);
   if (t.url) meta.push(`<a class="link-chip" href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">open ↗</a>`);
   if (asApp && t.subtasks.length) meta.unshift(`<span class="appstep">${subDone}/${t.subtasks.length} steps</span>`);
   const inToday = inQuests(t.id) || t.subtasks.some(x => inQuests(t.id, x.id));
   const open = ui.openTasks.has(t.id);
-  return `<div class="task-wrap ${open ? 'open' : ''} ${asApp ? 'app' : ''}"><div class="task ${t.done ? 'done' : ''}">
+  return `<div class="task-wrap ${open ? 'open' : ''} ${asApp ? 'app' : ''} ${t.sealed ? 'sealed' : ''}"><div class="task ${t.done ? 'done' : ''}">
     <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}>
     <div class="tbody"><div class="tt">${esc(t.title)}</div><div class="meta">${meta.join('')}</div></div>
     ${t.subtasks.length ? `<button class="steps-btn ${open ? 'on' : ''}" data-act="tgOpen" data-id="${t.id}" title="Steps">${t.subtasks.filter(x => x.done).length}/${t.subtasks.length} <i>${open ? '\u25be' : '\u25b8'}</i></button>` : ''}
     ${rankBadge(t.rank)}
     ${!t.done ? `<button class="icon-btn ${t.hint ? 'on' : ''}" data-act="hint" data-id="${t.id}" title="Message to the System">${ICON.msg}</button>` : ''}
-    ${!t.done && !isApplication(t) ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
+    ${!t.done && !noQuest(t) ? `<button class="icon-btn ${inToday ? 'on' : ''}" data-act="toToday" data-id="${t.id}" title="${inToday ? 'Remove from today\'s quests' : (t.subtasks.some(x => !x.done) ? 'Add the next step to today' : 'Add to today\'s quests')}">${inToday ? ICON.added : ICON.add}</button>` : ''}
     <button class="icon-btn" data-act="edit" data-id="${t.id}" title="Edit">${ICON.edit}</button></div>
     ${ui.dlOpen === t.id ? deadlineBar(t) : ''}
     ${open ? subList(t) : ''}</div>`;
@@ -1873,12 +1899,14 @@ function renderEdit() {
     <textarea id="eHint" rows="2" placeholder="e.g. split by chapters · only evenings · needs the lab PC · do the boring part first">${esc(t.hint || '')}</textarea>
     <label>Deadline</label>
     <div class="dlbar">${DEADLINE_CHIPS.map(c => { const v = c.f(); return `<button class="chip sm ${t.deadline === v ? 'on' : ''}" data-m="dl" data-v="${v}">${c.label}</button>`; }).join('')}${t.deadline ? `<button class="chip sm x" data-m="dl" data-v="">clear</button>` : ''}</div>
-    <div class="grid2"><div><input id="eDeadline" type="date" value="${esc(t.deadline)}">${t.deadline ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${esc(deadlineLabel(t.deadline))}${daysLeft(t.deadline) <= 1 ? ' · goes into today\'s quests' : ''}</p>` : ''}</div>
+    <div class="grid2"><div><input id="eDeadline" type="date" value="${esc(t.deadline)}">${t.deadline ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${esc(deadlineLabel(t.deadline))}${daysLeft(t.deadline) <= 1 ? (noQuest(t) ? ' · not scheduled — sealed' : ' · goes into today\'s quests') : ''}</p>` : ''}</div>
     <div><label>Rank (difficulty)</label><select id="eRank">${RANKS.map(x => `<option ${x === t.rank ? 'selected' : ''} value="${x}">${x} · ${RANK_XP[x]} XP</option>`).join('')}</select></div></div>
     <label>Stat</label><select id="eStat">${Object.entries(STATS).map(([k, v]) => `<option value="${k}" ${k === t.stat ? 'selected' : ''}>${k} — ${v} (${STAT_HINT[k]})</option>`).join('')}</select>
     <label>Type</label>
     <div class="chips"><button class="chip ${t.dungeon ? 'on' : ''}" data-m="dungeonToggle">${ICON.dungeon}Dungeon</button>
       <span class="muted" style="font-size:13px">a project with its own progress bar — and it can be shared with friends</span></div>
+    <div class="chips" style="margin-top:8px"><button class="chip ${t.sealed ? 'on seal' : ''}" data-m="sealToggle">${ICON.seal}Sealed</button>
+      <span class="muted" style="font-size:13px">the System never puts this task or its steps into a quest — you run it yourself. It can still be split and ranked for you.</span></div>
 
     <label>Subtasks</label>
     <div id="eSubs">${t.subtasks.map((s, i) => `<div class="sub-row"><input type="checkbox" class="chk" data-m="subchk" data-i="${i}" ${s.done ? 'checked' : ''}><input type="text" data-m="subtxt" data-i="${i}" value="${esc(s.title)}" class="grow"><button class="icon-btn" data-m="subdel" data-i="${i}">✕</button></div>`).join('')}</div>
@@ -1919,6 +1947,7 @@ $('#modal').addEventListener('click', async e => {
   const b = e.target.closest('[data-m]'); if (!b) return;
   const m = b.dataset.m, i = +b.dataset.i;
   if (m === 'dl') { readEditFields(); editing.deadline = b.dataset.v || ''; renderEdit(); return; }
+  if (m === 'sealToggle') { readEditFields(); editing.sealed = !editing.sealed; renderEdit(); return; }
   if (m === 'subtxt') return;
   readEditFields();
   const t = editing;
