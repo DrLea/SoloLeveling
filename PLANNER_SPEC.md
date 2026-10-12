@@ -1,11 +1,14 @@
 # Daily plan spec (Claude scheduled task + Haiku fallback)
 
 ## Input: `My Drive/SoloSystem/system-db.json`
+**This file holds the live window only** — the current and previous month of `log`, `plans` and `notes`, plus every open task. Older months were moved to `system-m-YYYY-MM.json` in the same folder and are summarised in `months`:
+- `months[YYYY-MM]` = `{rawXp, goldEarned, goldSpent, manaEarned, manaSpent, doneCount, dailyClears, statXp, shadows[], cal{}}`. `cal` is one row per day: `x` EXP, `n` completions, `t`/`q` quests planned/cleared, `c` cleared the day, `f` failed it, `w` he wrote a note.
+- `archive.liveFrom` says which month the live window starts at. Use `months[].cal` for anything older — streaks, history, how a stat has moved. Only open a `system-m-*.json` file if you genuinely need the detail of an old day; you almost never do.
 - `settings`: `tz` (5), `resetHour` (4), `dailyMinutes`, `maxQuests`, `name`
 - `tasks`: map id → `{id, title, notes, hint (the hunter's own message to you about THAT task — obey it when splitting and scheduling it), done, deleted, deadline 'YYYY-MM-DD', rank E-S, stat STR|INT|AGI|VIT|PER, subtasks[{id,title,done}], repeat{type,every,days}, nextDay, pinDay, origin}`
   - A task is **open today** when `!deleted && !done && (!nextDay || nextDay <= today)`
   - A task with **`sealed: true`** is off limits to the quest system. **Never put it in `quests`** — not when it is overdue, not when it is due today, never. You may still `split` it into subtasks and set its rank and stat in `updates`; that help is welcome. The app drops it from `quests` anyway if you try.
-- `log`: map id → `{type: done|sub|bonus|buy, day, xp, gold, stat, taskId}`. Use it for streak and history.
+- `log`: map id → `{type: done|sub|bonus|buy, day, xp, gold, stat, taskId}` — **the last two months only**. For anything older use `months[].cal`.
 - `plans`: map date → the plans that have already been applied. A quest with `blocked: true` was pushed back by the hunter; `reason` says why, and it doesn't count for or against the day.
 - `notes`: map date → `{date, text}` — what the hunter wrote to the coach that day. **Read the last 3 days and act on it.**
 - `settings.standing`: permanent standing orders. Always obey them.

@@ -5,7 +5,7 @@ A static PWA that you can install on desktop and phone. You don't need a server.
 - **Tasks.** Type a task and press Enter, then tick it when it's done. Press the ⌛ chip for a deadline (today / tomorrow / +3 days / +1 week / Saturday / end of month), or type `!tom`, `!3d`, `!fri` at the end of the line. Press ✎ for subtasks, a **Sealed** mark that keeps a task out of the quest system, a reward (text and bonus gold), a difficulty rank from E to S, a stat, and a repeat rule. The repeat rules are: daily, certain weekdays, every N days, N days after you finish, or monthly.
 - **Daily Quest.** Each day the System picks a set of quests you can manage from your tasks. You get a clear reward if you finish them all. If you miss any, a **Penalty Quest** appears the next day. The day resets at 04:00 (UTC+5).
 - **Game layer.** You earn XP and levels, move up through Hunter ranks (E → S → National), and raise five stats (STR/INT/AGI/VIT/PER). You also get streaks, titles to unlock, and a gold **Shop** where you set your own rewards.
-- **Sync** runs through your own Google Drive: `My Drive/SoloSystem/system-db.json`.
+- **Sync** runs through your own Google Drive: `My Drive/SoloSystem/system-db.json` holds the current and previous month; older months live in `system-m-YYYY-MM.json` beside it and are fetched only when you open them.
 - **AI plans.** Claude, run as a scheduled task at 04:00, writes `ai-plan-YYYY-MM-DD.json`. If no plan exists by the fallback hour, the app calls Haiku **once**. When a plan file exists for the day, that day counts as processed, so no second AI call is made.
 
 ## Security model (what the password actually protects)
@@ -101,6 +101,14 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Collapsible panels.** PAID OPPORTUNITIES, WEEKLY REVIEW, OPPORTUNITIES and SIDE QUESTS are collapsed by default with a counter of unhandled items in the header; they fold back when you leave the tab.
 - **Fixed:** sharing a dungeon failed with "Drive 400 — invalid JSON payload" because party files were sent to Drive's metadata endpoint instead of its upload endpoint.
 
+## v20 — speed
+- **A reload syncs.** Opening or refreshing the page now draws the app from the encrypted local copy first (about 0.2s, everything already there) and then starts a Drive sync on its own, without waiting for you to touch anything. It waits for Google's script if it has to.
+- **The sync itself is shorter.** It goes straight to the remembered file id instead of searching Drive for it, and it only looks through the plan and review folders when something could actually be waiting there — a missing or local-only plan for today, or no review in the last six days. Today's data is painted on screen the moment the merge is done, before the rest of the sync finishes.
+- **The database is split into chunks.** Only the current and previous month stay in `system-db.json`. Everything older is written to its own `system-m-YYYY-MM.json` and replaced in the hot file by a summary of that month: the totals, **the full shadow roster**, and one small row per day (EXP, completions, cleared/failed, whether you wrote a note) — which is what the calendar draws from. Finished, non-repeating tasks move out with their month too.
+  On eight months of data the hot file went from **423 KB to 95 KB**, and the live log from 837 entries to 151. Your level, EXP, gold, mana, stats, streak, army and elites come out *identical* — the app checks that before it drops anything, and rolls back if a single number moved. Nothing is deleted: every archived month sits in Drive in full.
+- **Opening an old month in Record fetches it** — one file — and then shows that month's days, notes, plans and entries exactly as before. Sealed months you haven't opened still show their marks and EXP from the summary.
+- Archiving only ever happens with Drive connected, after the month's own file is safely written. In local-only mode nothing moves.
+
 ## v19
 - **Sealed tasks.** A **SEALED** chip in the edit screen, next to DUNGEON. A sealed task and every one of its steps is off limits to the quest system: the 4 AM planner skips it, reroll skips it, the deadline rule skips it (even overdue), a plan that names it anyway is ignored, and the ⊕ button disappears from the row and from each step. It stays where it was in ACTIVE, marked with a warded-gate chip, a purple edge and a faint hatch. Claude may still split it into steps and set its rank — it just can't put it in your day. Untick the chip and it goes back to normal.
 - **The System offers the seal.** Push the same quest back to Tasks three times and a notification asks once whether to stop assigning it. "Seal it" marks it; "Not now" is remembered so you are never asked about that task again.
@@ -138,6 +146,8 @@ There is also **Export JSON** in the System tab for a copy on disk at any time.
 
 ## Files
 `index.html`, `style.css`, `app.js` (all the logic), `config.js` (Client ID), `sw.js` (offline cache: bump `VERSION` whenever you deploy), `manifest.json`, `icon.svg`, `PLANNER_SPEC.md` (the plan format shared by Claude and Haiku).
+
+In Drive: `system-db.json` (live window), `system-m-YYYY-MM.json` (sealed months, full detail), `ai-plan-*.json`, `weekly-review-*.json`, `backup-system-db-*.json`.
 
 ## Local test
 `python -m http.server 8000`, then open http://localhost:8000

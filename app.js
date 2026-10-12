@@ -111,7 +111,71 @@ const DEFAULT_SETTINGS = {
   autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], cls: '', skills: {}, updatedAt: 0
 };
 function emptyDB() {
-  return { schema: 1, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+  return { schema: 2, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, months: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+}
+// ---------- the archive
+// Only the current and previous month stay in the hot file. Older months are written out to their own
+// Drive file and replaced by a summary that is *exactly* the arithmetic player() would have done —
+// totals, the shadow roster, and one small row per day for the calendar. Nothing is ever thrown away.
+const LIVE_MONTHS = 2;
+const monthOf = key => (key || '').slice(0, 7);
+function oldestLiveMonth() { const d = new Date(today() + 'T00:00:00Z'); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - (LIVE_MONTHS - 1)); return d.toISOString().slice(0, 7); }
+const archName = ym => `system-m-${ym}.json`;
+const isArchived = ym => !!(db.months && db.months[ym] && !db.months[ym].deleted);
+function emptyMonth(ym) {
+  return {
+    ym, id: ym, rawXp: 0, spentXp: 0, goldEarned: 0, goldSpent: 0, manaEarned: 0, manaSpent: 0,
+    doneCount: 0, sClears: 0, penaltyClears: 0, dailyClears: 0, dungeonClears: 0, awakenings: 0, revived: 0,
+    statXp: { STR: 0, INT: 0, AGI: 0, VIT: 0, PER: 0 }, inv: { skip: 0, shield: 0, potion: 0 },
+    shadows: [], fallen: [], reviveRefs: [], shieldDays: [], potionDay: '', buffXp2: false, cal: {}, updatedAt: 0
+  };
+}
+// one log entry folded into a month summary. This mirrors the loop in player() line for line;
+// the only difference is that inventory is kept as a net delta and clamped once at the end,
+// so the result cannot depend on where a month boundary happens to fall.
+function foldEntry(m, e) {
+  if (e.deleted) return;
+  const row = d => (m.cal[d] = m.cal[d] || { x: 0, n: 0 });
+  if (e.type === 'done' || e.type === 'sub' || e.type === 'bonus') {
+    m.rawXp += +e.xp || 0; m.goldEarned += +e.gold || 0;
+    if (e.stat && m.statXp[e.stat] != null) m.statXp[e.stat] += +e.xp || 0;
+    row(e.day).x += +e.xp || 0;
+    if (e.type !== 'bonus') row(e.day).n += 1;
+    if (e.type === 'done') {
+      m.doneCount++; if (e.rank === 'S') m.sClears++; if (e.origin === 'penalty') m.penaltyClears++;
+      m.shadows.push({ id: e.id, name: e.title, rank: e.rank || 'E', day: e.day });
+      if (e.dungeon) m.dungeonClears++;
+    }
+    if (e.type === 'bonus') m.dailyClears++;
+  }
+  if (e.type === 'buy') m.goldSpent += +e.cost || 0;
+  if (e.type === 'item') { m.goldSpent += +e.cost || 0; if (m.inv[e.key] != null) m.inv[e.key]++; }
+  if (e.type === 'use') {
+    if (m.inv[e.key] != null) m.inv[e.key]--;
+    if (e.key === 'shield') m.shieldDays.push(e.forDay || e.day);
+    if (e.key === 'potion' && e.day > m.potionDay) m.potionDay = e.day;
+  }
+  if (e.type === 'awaken') { m.awakenings++; m.spentXp += +e.xpSpent || 0; }
+  if (e.type === 'arise') { m.manaSpent += +e.mana || 0; if (e.kind === 'xp2' && !e.used) m.buffXp2 = true; }
+  if (e.type === 'mana') m.manaEarned += +e.amount || 0;
+  if (e.type === 'fall') (e.ids || []).forEach(id => m.fallen.push(id));
+  if (e.type === 'revive') { m.manaSpent += +e.mana || 0; m.reviveRefs.push(e.shadowId); m.revived++; }
+}
+function summariseMonth(ym) {
+  const m = emptyMonth(ym);
+  for (const e of Object.values(db.log).filter(x => !x.deleted && monthOf(x.day) === ym).sort((a, b) => a.at - b.at)) foldEntry(m, e);
+  for (const [date, plan] of Object.entries(db.plans)) {
+    if (monthOf(date) !== ym || !plan || plan.deleted) continue;
+    const st = planStatus(plan); const r = (m.cal[date] = m.cal[date] || { x: 0, n: 0 });
+    r.t = st.total; r.q = st.done;
+    if (plan.bonusClaimed) r.c = 1;
+    else if (date < today() && st.done < st.total) r.f = 1;
+  }
+  for (const [date, nt] of Object.entries(db.notes || {})) {
+    if (monthOf(date) !== ym || !nt || !String(nt.text || '').trim()) continue;
+    (m.cal[date] = m.cal[date] || { x: 0, n: 0 }).w = 1;      // there is a note on this day
+  }
+  m.updatedAt = now(); return m;
 }
 let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
@@ -262,12 +326,17 @@ function mergeMaps(a = {}, b = {}) {
 function mergeDB(a, b) {
   if (!b) return a; if (!a) return b;
   const m = emptyDB();
-  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews', 'restDates']) m[c] = mergeMaps(a[c], b[c]);
+  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews', 'restDates', 'months']) m[c] = mergeMaps(a[c], b[c]);
   m.settings = { ...DEFAULT_SETTINGS, ...((b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings) };
   m.security = (b.security?.updatedAt || 0) > (a.security?.updatedAt || 0) ? b.security : a.security;
   return m;
 }
-function stableDB(d) { const c = { ...d }; return JSON.stringify(c); }
+function stableDB(d) {
+  const c = { ...d };
+  // a signpost for the scheduled tasks: the hot file holds the live window, older months sit in their own files
+  if (Object.keys(c.months || {}).length) c.archive = { liveFrom: oldestLiveMonth(), months: Object.keys(c.months).sort(), note: 'Older log/plans/notes live in system-m-YYYY-MM.json. months[] holds their totals.' };
+  return JSON.stringify(c);
+}
 
 // ---------- tasks
 function guessStat(title) {
@@ -385,8 +454,28 @@ function player() {
   const statXp = { STR: 0, INT: 0, AGI: 0, VIT: 0, PER: 0 };
   const byDay = {}, xpByDay = {}, shadows = [], inv = { skip: 0, shield: 0, potion: 0 }, shieldDays = new Set();
   let potionDay = '';
+  // 1) the sealed months, in order — their totals were computed by this same arithmetic
+  for (const ym of Object.keys(db.months || {}).sort()) {
+    const m = db.months[ym]; if (!m || m.deleted) continue;
+    rawXp += m.rawXp || 0; spentXp += m.spentXp || 0; goldEarned += m.goldEarned || 0; goldSpent += m.goldSpent || 0;
+    manaEarned += m.manaEarned || 0; manaSpent += m.manaSpent || 0; revived += m.revived || 0;
+    doneCount += m.doneCount || 0; sClears += m.sClears || 0; penaltyClears += m.penaltyClears || 0;
+    dailyClears += m.dailyClears || 0; dungeonClears += m.dungeonClears || 0; awakenings += m.awakenings || 0;
+    for (const k in statXp) statXp[k] += (m.statXp || {})[k] || 0;
+    for (const k in inv) inv[k] += (m.inv || {})[k] || 0;
+    for (const [d, r] of Object.entries(m.cal || {})) { if (r.x) xpByDay[d] = (xpByDay[d] || 0) + r.x; if (r.n) byDay[d] = (byDay[d] || 0) + r.n; }
+    (m.shadows || []).forEach(sh => shadows.push({ ...sh, elite: ['A', 'S'].includes(sh.rank) }));
+    (m.fallen || []).forEach(id => fallen.add(id));
+    (m.reviveRefs || []).forEach(id => reviveRefs.add(id));
+    (m.shieldDays || []).forEach(d => shieldDays.add(d));
+    if (m.potionDay && m.potionDay > potionDay) potionDay = m.potionDay;
+    if (m.buffXp2) buffXp2 = true;
+  }
+  // 2) then the live log. A month that has been sealed is skipped here — another device may have
+  //    merged its raw entries back in, and they are already counted above.
   for (const e of Object.values(db.log).sort((a, b) => a.at - b.at)) {
     if (e.deleted) continue;
+    if (isArchived(monthOf(e.day))) continue;
     if (e.type === 'done' || e.type === 'sub' || e.type === 'bonus') {
       rawXp += +e.xp || 0; goldEarned += +e.gold || 0;
       if (e.stat && statXp[e.stat] != null) statXp[e.stat] += +e.xp || 0;
@@ -402,9 +491,9 @@ function player() {
     if (e.type === 'buy') goldSpent += +e.cost || 0;
     if (e.type === 'item') { goldSpent += +e.cost || 0; if (inv[e.key] != null) inv[e.key]++; }
     if (e.type === 'use') {
-      if (inv[e.key] != null) inv[e.key] = Math.max(0, inv[e.key] - 1);
+      if (inv[e.key] != null) inv[e.key]--;                 // clamped once, after everything is counted
       if (e.key === 'shield') shieldDays.add(e.forDay || e.day);
-      if (e.key === 'potion') potionDay = e.day;
+      if (e.key === 'potion' && e.day > potionDay) potionDay = e.day;
     }
     if (e.type === 'awaken') { awakenings++; spentXp += +e.xpSpent || 0; }
     if (e.type === 'arise') { manaSpent += +e.mana || 0; if (e.kind === 'xp2' && !e.used) buffXp2 = true; }
@@ -412,6 +501,7 @@ function player() {
     if (e.type === 'fall') (e.ids || []).forEach(id => fallen.add(id));
     if (e.type === 'revive') { manaSpent += +e.mana || 0; reviveRefs.add(e.shadowId); revived++; }
   }
+  for (const k in inv) inv[k] = Math.max(0, inv[k]);
   const xp = Math.max(0, rawXp - spentXp);
   // a shadow that fell stays in the army, only dimmed, until mana brings it back
   shadows.forEach(sh => { sh.fallen = fallen.has(sh.id) && !reviveRefs.has(sh.id); });
@@ -666,7 +756,7 @@ function localPlan() {
   };
 }
 // ---------- quest control: block / reroll / quick add / focus timer
-function questTitle(q) { const t = db.tasks[q.taskId]; if (!t) return '?'; const s = q.subId && t.subtasks.find(x => x.id === q.subId); return s ? s.title : t.title; }
+function questTitle(q) { const t = archTask(q.taskId); if (!t) return '?'; const s = q.subId && t.subtasks.find(x => x.id === q.subId); return s ? s.title : t.title; }
 const SEAL_AFTER = 3;   // blocked this often and the System stops handing it to you
 function blockCount(taskId) {
   return Object.values(db.plans).filter(pl => !pl.deleted && (pl.quests || []).some(q => q.taskId === taskId && q.blocked)).length;
@@ -1160,6 +1250,11 @@ const Drive = {
     const r = await this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
     return (await r.json()).id;
   },
+  async named(name) {
+    const folder = await this.ensureFolder();
+    const f = await this.q(`name='${name}' and '${folder}' in parents and trashed=false`);
+    return f[0] || null;
+  },
   async findDbFile() {
     const folder = await this.ensureFolder();
     const f = await this.q(`name='${DBFILE}' and '${folder}' in parents and trashed=false`);
@@ -1196,6 +1291,104 @@ const Drive = {
   }
 };
 
+function whenGoogle(ms = 9000) {
+  return new Promise((res, rej) => {
+    if (window.google?.accounts?.oauth2) return res();
+    const t0 = now(), iv = setInterval(() => {
+      if (window.google?.accounts?.oauth2) { clearInterval(iv); res(); }
+      else if (now() - t0 > ms) { clearInterval(iv); rej(new Error('google script')); }
+    }, 120);
+  });
+}
+// months fetched back from Drive on demand (calendar navigation). Memory only — they are read-only history.
+const ARCH = {};
+let archBusy = '';
+async function loadArchive(ym) {
+  if (ARCH[ym] || archBusy === ym) return ARCH[ym] || null;
+  if (!Drive.ready()) return null;
+  archBusy = ym;
+  try {
+    const f = await Drive.named(archName(ym));
+    ARCH[ym] = f ? (parseJSON(await Drive.readText(f)) || { log: {}, plans: {}, notes: {} }) : { log: {}, plans: {}, notes: {} };
+  } catch (e) { console.warn('archive', ym, e); ARCH[ym] = null; }
+  finally { archBusy = ''; }
+  renderSoft(); return ARCH[ym];
+}
+const archPlan = d => db.plans[d] || ARCH[monthOf(d)]?.plans?.[d] || null;
+function archTask(id) { if (db.tasks[id]) return db.tasks[id]; for (const a of Object.values(ARCH)) if (a?.tasks?.[id]) return a.tasks[id]; return null; }
+// finished, never-repeating, and finished before the live window: its work is already counted in the
+// month summary and in the shadow roster, so the task itself can go and live with that month
+function archivableTasks(ym) {
+  const out = {};
+  for (const [k, t] of Object.entries(db.tasks)) {
+    if (!t.done || t.deleted || (t.repeat && t.repeat.type !== 'none') || t.nextDay) continue;
+    if (monthOf(dayKey(t.doneAt || t.updatedAt || 0)) !== ym) continue;
+    out[k] = t;
+  }
+  return out;
+}
+const archNote = d => (db.notes || {})[d] || ARCH[monthOf(d)]?.notes?.[d] || null;
+function archEntries(d) {
+  const live = Object.values(db.log).filter(e => !e.deleted && e.day === d && !isArchived(monthOf(d)));
+  const old = Object.values(ARCH[monthOf(d)]?.log || {}).filter(e => !e.deleted && e.day === d);
+  const seen = new Set(live.map(e => e.id));
+  return [...live, ...old.filter(e => !seen.has(e.id))].sort((a, b) => a.at - b.at);
+}
+// move every month older than the live window out of the hot file. Nothing is dropped until the
+// month's own file has been written, and the totals are checked against the live numbers first.
+async function archiveOldMonths() {
+  if (!Drive.ready()) return 0;                       // local-only: keep everything where it is
+  const cutoff = oldestLiveMonth(), months = new Set();
+  for (const e of Object.values(db.log)) { const m = monthOf(e.day); if (m && m < cutoff) months.add(m); }
+  for (const d of Object.keys(db.plans)) { const m = monthOf(d); if (m && m < cutoff) months.add(m); }
+  for (const d of Object.keys(db.notes || {})) { const m = monthOf(d); if (m && m < cutoff) months.add(m); }
+  if (!months.size) return 0;
+  const before = player();
+  const snap = { log: { ...db.log }, plans: { ...db.plans }, notes: { ...(db.notes || {}) }, months: { ...(db.months || {}) } };
+  let moved = 0;
+  try {
+    const folder = await Drive.ensureFolder();
+    for (const ym of [...months].sort()) {
+      // pull in whatever another device already wrote for this month, so the summary covers the union
+      const f = await Drive.named(archName(ym));
+      const had = f ? (parseJSON(await Drive.readText(f)) || {}) : {};
+      db.log = mergeMaps(db.log, had.log || {});
+      db.plans = mergeMaps(db.plans, had.plans || {});
+      db.notes = mergeMaps(db.notes || {}, had.notes || {});
+      db.tasks = mergeMaps(db.tasks, had.tasks || {});
+      const log = {}, plans = {}, notes = {};
+      for (const [k, e] of Object.entries(db.log)) if (monthOf(e.day) === ym) log[k] = e;
+      for (const [k, v] of Object.entries(db.plans)) if (monthOf(k) === ym) plans[k] = v;
+      for (const [k, v] of Object.entries(db.notes || {})) if (monthOf(k) === ym) notes[k] = v;
+      const tasks = archivableTasks(ym);
+      if (!Object.keys(log).length && !Object.keys(plans).length && !Object.keys(notes).length && !Object.keys(tasks).length) continue;
+      // the summary is recomputed from the whole union every time, so any device gets the same answer
+      db.months = db.months || {};
+      const was = db.months[ym]; delete db.months[ym];
+      const sum = summariseMonth(ym);
+      db.months[ym] = was ? { ...sum, createdAt: was.createdAt || now() } : { ...sum, createdAt: now() };
+      await Drive.putIn(folder, archName(ym), JSON.stringify({ ym, log, plans, notes, tasks, writtenAt: new Date().toISOString() }));
+      ARCH[ym] = { ym, log, plans, notes, tasks };
+      for (const k of Object.keys(log)) delete db.log[k];
+      for (const k of Object.keys(plans)) delete db.plans[k];
+      for (const k of Object.keys(notes)) delete db.notes[k];
+      for (const k of Object.keys(tasks)) delete db.tasks[k];
+      moved++;
+    }
+  } catch (e) { console.warn('archive failed', e); Object.assign(db, snap); return 0; }
+  if (!moved) return 0;
+  // the economy must come out identical — if it doesn't, put everything back and leave the format alone
+  const after = player();
+  const same = ['xp', 'totalXp', 'gold', 'mana', 'doneCount', 'dailyClears', 'dungeonClears', 'awakenings', 'revived', 'armyPower', 'fullPower']
+    .every(k => before[k] === after[k])
+    && Object.keys(before.stats).every(k => before.stats[k] === after.stats[k])
+    && before.shadows.length === after.shadows.length
+    && before.doneCount === after.doneCount
+    && before.shadows.filter(x => x.fallen).length === after.shadows.filter(x => x.fallen).length;
+  if (!same) { console.warn('archive check failed — rolled back', before, after); Object.assign(db, snap); return 0; }
+  return moved;
+}
+
 let syncing = false, syncTimer = null, lastSync = LS.get('ss_last_sync', 0), syncErr = '', syncFails = 0, syncQueued = false, syncedOnce = false;
 function dirty() { return LS.get('ss_dirty', false); }
 function scheduleSync(ms) { clearTimeout(syncTimer); if (Drive.configured()) syncTimer = setTimeout(() => sync(), ms); }
@@ -1208,24 +1401,33 @@ async function sync(opts = {}) {
   }
   syncing = true; renderSync();
   try {
-    const file = await Drive.findDbFile();
+    // the file id is remembered, so the usual sync is one read instead of a search plus a read
+    let file = Drive.fileId ? { id: Drive.fileId } : null;
     let remote = null, remoteStr = '';
-    if (file) { remoteStr = await Drive.readText(file); try { remote = JSON.parse(remoteStr); } catch { remote = null; } }
+    if (file) { try { remoteStr = await Drive.readText(file); } catch { file = null; } }
+    if (!file) { file = await Drive.findDbFile(); if (file) remoteStr = await Drive.readText(file); }
+    if (remoteStr) { try { remote = JSON.parse(remoteStr); } catch { remote = null; } }
     db = mergeDB(db, remote);
-    // import AI plan files (Claude scheduled task or Haiku from another device)
+    renderSoft();                     // today's data is on screen now — the rest happens behind it
+    // the plan and review folders are only searched when something could actually be waiting there
     const d = today(), y = addDays(d, -1);
-    for (const f of await Drive.planFiles()) {
+    const needPlans = !db.plans[d] || db.plans[d].source === 'local' || (db.plans[y] && db.plans[y].source === 'local');
+    const lastRev = Object.keys(db.reviews || {}).sort().pop();
+    const needRevs = !lastRev || lastRev < addDays(d, -6);
+    const [planList, revList] = await Promise.all([needPlans ? Drive.planFiles() : [], needRevs ? Drive.reviewFiles() : []]);
+    for (const f of planList) {
       const m = f.name.match(/ai-plan-(\d{4}-\d{2}-\d{2})/); if (!m) continue;
       const date = m[1]; if (date !== d && date !== y) continue;
       if (db.plans[date] && db.plans[date].source !== 'local') continue;
       try { const p = parseJSON(await Drive.readText(f)); p.date = date; if (applyPlan(p, p.source || 'claude') && date === d) { sfx('level'); popup({ title: 'Daily Quest Arrived', text: esc(p.message || 'New quests assigned.') }); } } catch (e) { console.warn('bad plan file', f.name, e); }
     }
-    for (const f of await Drive.reviewFiles()) {
+    for (const f of revList) {
       const m = f.name.match(/weekly-review-(\d{4}-\d{2}-\d{2})/); if (!m) continue;
       if (m[1] < addDays(d, -10) || db.reviews?.[m[1]]) continue;
       try { const r = parseJSON(await Drive.readText(f)); r.date = m[1]; if (applyReview(r)) { sfx('level'); popup({ title: 'Weekly Review', text: esc((r.summary || '').slice(0, 220)) }); } } catch (e) { console.warn('bad review file', f.name, e); }
     }
     runDaily();
+    await archiveOldMonths();        // sealed months leave the hot file once their own file is written
     const out = stableDB(db);
     if (out !== remoteStr) Drive.fileId = await Drive.upsert(DBFILE, out, file ? file.id : null);
     LS.set('ss_fileid', Drive.fileId);
@@ -1685,26 +1887,30 @@ function viewStatus(p) {
   h += `<div class="row" style="justify-content:center;margin:18px 0 6px"><button class="btn" data-act="cert">\u2b13 Export hunter license</button></div>`;
   return h;
 }
+const allLog = () => { const out = { ...db.log }; for (const a of Object.values(ARCH)) Object.assign(out, a?.log || {}); return out; };
+const allPlans = () => { const out = { ...db.plans }; for (const a of Object.values(ARCH)) Object.assign(out, a?.plans || {}); return out; };
+const allTasks = () => { const out = { ...db.tasks }; for (const a of Object.values(ARCH)) Object.assign(out, a?.tasks || {}); return out; };
 function analytics(p) {
   const d = today(), tz = S().tz;
-  const done = Object.values(db.log).filter(e => !e.deleted && (e.type === 'done' || e.type === 'sub'));
+  const done = Object.values(allLog()).filter(e => !e.deleted && (e.type === 'done' || e.type === 'sub'));
   // 1. when the work actually happens — 2-hour buckets in his own timezone
   const hours = new Array(12).fill(0);
   done.forEach(e => { const h = new Date(e.at + tz * 3600e3).getUTCHours(); hours[Math.floor(h / 2)]++; });
   // 2. quests cleared vs missed, by rank
   const byRank = {}; RANKS.forEach(r => byRank[r] = { done: 0, missed: 0 });
-  for (const [date, plan] of Object.entries(db.plans)) {
+  const TA = allTasks();
+  for (const [date, plan] of Object.entries(allPlans())) {
     if (date > d) continue;
     for (const q of plan.quests || []) {
       if (q.blocked || q.skipped) continue;
-      const t = db.tasks[q.taskId]; if (!t) continue;
+      const t = TA[q.taskId]; if (!t) continue;
       const row = byRank[t.rank] || byRank.E;
       if (questDone(q, date)) row.done++; else if (date < d) row.missed++;
     }
   }
   // 3. how long a task lives from creation to completion
   const lives = [];
-  for (const e of done) { if (e.type !== 'done') continue; const t = db.tasks[e.taskId]; if (!t || !t.createdAt) continue; lives.push(Math.max(0, (e.at - t.createdAt) / 864e5)); }
+  for (const e of done) { if (e.type !== 'done') continue; const t = TA[e.taskId]; if (!t || !t.createdAt) continue; lives.push(Math.max(0, (e.at - t.createdAt) / 864e5)); }
   lives.sort((a, b) => a - b);
   const median = lives.length ? lives[Math.floor(lives.length / 2)] : 0;
   const oldest = liveTasks().filter(isActive).sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -1767,6 +1973,14 @@ function viewAnalytics(p) {
   h += `<div class="sys-window card"><div class="sys-head">EXP BY WEEK</div><div class="sys-body">${bars(a.weeks.map(w => ({ label: w.label, v: w.xp })))}</div></div>`;
   return h;
 }
+// what a day looked like: the live plan if we still hold it, otherwise the sealed month's row
+function dayMark(d) {
+  const plan = archPlan(d);
+  if (plan) { const st = planStatus(plan); return { cleared: !!plan.bonusClaimed, failed: d < today() && st.done < st.total, done: st.done, total: st.total, has: true }; }
+  const r = db.months?.[monthOf(d)]?.cal?.[d];
+  if (r) return { cleared: !!r.c, failed: !!r.f, done: r.q || 0, total: r.t || 0, has: !!(r.t || r.x || r.n) };
+  return { cleared: false, failed: false, done: 0, total: 0, has: false };
+}
 function viewLog(p) {
   const sub = ui.logSub || 'cal';
   let head = `<div class="chips" style="margin-bottom:12px"><button class="chip ${sub === 'cal' ? 'on' : ''}" data-act="logSub" data-id="cal">Calendar</button><button class="chip ${sub === 'an' ? 'on' : ''}" data-act="logSub" data-id="an">Analytics</button></div>`;
@@ -1787,17 +2001,18 @@ function viewLog(p) {
     <div class="cal">${['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map(d => `<div class="cal-h">${d}</div>`).join('')}`;
   for (const c of cells) {
     if (!c) { h += `<div></div>`; continue; }
-    const xp = p.xpByDay[c] || 0, plan = db.plans[c], st = plan ? planStatus(plan) : null;
-    const cleared = plan && plan.bonusClaimed, failed = plan && c < today() && st.done < st.total && !p.shieldDays.has(c);
+    const xp = p.xpByDay[c] || 0, mk = dayMark(c);
+    const cleared = mk.cleared, failed = mk.failed && !p.shieldDays.has(c);
     const a = xp ? 0.15 + 0.85 * Math.min(1, xp / maxXp) : 0;
     h += `<button class="cal-d ${c === today() ? 'today' : ''} ${ui.calDay === c ? 'sel' : ''} ${cleared ? 'cleared' : ''} ${failed ? 'failed' : ''} ${isRestDay(c) ? 'rest' : ''}" data-act="calday" data-id="${c}" style="--a:${a}">
       <span>${+c.slice(8)}</span>${xp ? `<i>${xp}</i>` : ''}</button>`;
   }
   h += `</div><div class="cal-legend muted"><span class="lg cleared"></span>daily quest cleared <span class="lg failed"></span>failed <span class="lg xp"></span>EXP earned <span class="lg rest"></span>rest day</div></div></div>`;
+  if (isArchived(month) && !ARCH[month]) { loadArchive(month); h += `<p class="muted" style="font-size:13px;text-align:center;margin:-4px 0 12px">${Drive.ready() ? 'Fetching this month\u2019s detail\u2026' : 'Open this month with Drive connected to see the detail.'}</p>`; }
   const d = ui.calDay;
   if (d) {
-    const plan = db.plans[d];
-    const entries = Object.values(db.log).filter(e => !e.deleted && e.day === d).sort((a, b) => a.at - b.at);
+    const plan = archPlan(d);
+    const entries = archEntries(d);
     h += `<div class="sys-window card"><div class="sys-head">${esc(fmtDay(d))} <span style="margin-left:auto;font-size:12px;color:var(--muted)">${d}</span></div><div class="sys-body">
       <div class="row" style="margin-bottom:12px"><button class="btn small ${isRestDay(d) ? 'primary' : ''}" data-act="restDate" data-id="${d}">${isRestDay(d) ? '✓ rest day' : 'make it a rest day'}</button>
       <span class="muted" style="font-size:13px">${isRestDay(d) ? 'only habits and what burns, no penalty' : 'mark holidays and days off in advance'}</span></div>`;
@@ -1806,7 +2021,8 @@ function viewLog(p) {
       h += `<div class="sys-msg"><b>${esc(plan.title || 'Daily Quest')}</b> — ${st.done}/${st.total} cleared${plan.bonusClaimed ? ' ✓' : ''}<br><span class="muted">${esc(plan.message || '')}</span>
         ${blocked.length ? `<br><span class="muted">⤺ blocked: ${blocked.map(q => esc(questTitle(q)) + (q.reason ? ` (${esc(q.reason)})` : '')).join(', ')}</span>` : ''}</div>`;
     }
-    if (note(d)) h += `<div class="bonus-box" style="border-color:var(--line-soft);color:var(--text)"><b>Your note</b><br>${esc(note(d)).replace(/\n/g, '<br>')}</div>`;
+    const nt = archNote(d)?.text || '';
+    if (nt) h += `<div class="bonus-box" style="border-color:var(--line-soft);color:var(--text)"><b>Your note</b><br>${esc(nt).replace(/\n/g, '<br>')}</div>`;
     const focusMin = Object.values(db.log).filter(e => !e.deleted && e.type === 'focus' && e.day === d).reduce((a, e) => a + (+e.minutes || 0), 0);
     if (focusMin) h += `<p class="muted" style="font-size:14px;margin:10px 0 0">⏱ Focused time recorded: <b>${focusMin} min</b></p>`;
     if (!entries.length) h += `<div class="empty">Nothing recorded on this day.</div>`;
@@ -2092,7 +2308,7 @@ document.addEventListener('click', async e => {
     case 'cert': return certificate();
     case 'awaken': if (!confirmInline(b, 'Tap again to Awaken')) return; return awaken();
     case 'tgShadows': ui.allShadows = !ui.allShadows; return render();
-    case 'cal': ui.calMonth = id; return render();
+    case 'cal': ui.calMonth = id; if (isArchived(id) && !ARCH[id]) loadArchive(id); return render();
     case 'logSub': ui.logSub = id; return render();
     case 'panel': ui.panels.has(id) ? ui.panels.delete(id) : ui.panels.add(id); return render();
     case 'paid': return acceptPaid(id, b.dataset.sub);
@@ -2206,7 +2422,14 @@ window.addEventListener('popstate', e => {
   readPartyHash();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
   const sec = LS.get('ss_security', null); if (sec) db.security = sec;
-  if (await tryRememberedKey()) { enterApp(); if (Drive.ready()) sync(); return; }
+  if (await tryRememberedKey()) {
+    enterApp();                                   // the screen is up before anything touches the network
+    if (Drive.configured()) {
+      if (Drive.ready()) sync();
+      else whenGoogle().then(() => sync()).catch(() => renderSync());
+    }
+    return;
+  }
   renderLock();
 })();
-window.__SS = { get db() { return db; }, applyPlan, localPlan, plannerInput, player, today, mergeDB };
+window.__SS = { get db() { return db; }, set db(v) { db = v; }, applyPlan, localPlan, plannerInput, player, today, mergeDB, stableDB, Drive, ARCH, archiveOldMonths, summariseMonth, oldestLiveMonth, monthOf, isArchived, dayMark, emptyDB };
