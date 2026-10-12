@@ -1196,7 +1196,11 @@ const Drive = {
   },
   // must be called from a user gesture (click) for the popup to open
   connect(prompt = '') {
-    if (!this.init()) return Promise.reject(new Error('Google script not loaded or no Client ID'));
+    if (!this.clientId()) return Promise.reject(new Error('No Google Client ID set'));
+    if (!this.init()) {
+      // the sign-in script hadn't arrived (slow network, or the first load failed) — fetch it again, then carry on
+      return whenGoogle().then(() => { if (!this.init()) throw new Error('Google sign-in failed to start'); return this.connect(prompt); });
+    }
     if (this.pending) return new Promise((res, rej) => { const p = this.pending; this.pending = { res: v => { p.res(v); res(v); }, rej: e => { p.rej(e); rej(e); } }; });
     return new Promise((res, rej) => {
       this.pending = { res, rej };
@@ -1291,12 +1295,20 @@ const Drive = {
   }
 };
 
-function whenGoogle(ms = 9000) {
-  return new Promise((res, rej) => {
-    if (window.google?.accounts?.oauth2) return res();
+// Loads Google's sign-in script, re-injecting it if the copy in index.html never arrived.
+let gisLoading = null;
+function whenGoogle(ms = 12000) {
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  return gisLoading ??= new Promise((res, rej) => {
+    const fail = msg => { clearInterval(iv); gisLoading = null; rej(new Error(msg)); };
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client?r=' + now();
+    s.async = true;
+    s.onerror = () => fail('Google sign-in script blocked or offline (ad blocker / network?)');
+    document.head.appendChild(s);
     const t0 = now(), iv = setInterval(() => {
-      if (window.google?.accounts?.oauth2) { clearInterval(iv); res(); }
-      else if (now() - t0 > ms) { clearInterval(iv); rej(new Error('google script')); }
+      if (window.google?.accounts?.oauth2) { clearInterval(iv); gisLoading = null; res(); }
+      else if (now() - t0 > ms) fail('Google sign-in script timed out — check your connection');
     }, 120);
   });
 }
