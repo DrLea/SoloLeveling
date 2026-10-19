@@ -102,6 +102,9 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Collapsible panels.** PAID OPPORTUNITIES, WEEKLY REVIEW, OPPORTUNITIES and SIDE QUESTS are collapsed by default with a counter of unhandled items in the header; they fold back when you leave the tab.
 - **Fixed:** sharing a dungeon failed with "Drive 400 — invalid JSON payload" because party files were sent to Drive's metadata endpoint instead of its upload endpoint.
 
+## v22
+- **Fixed: a long sketch line vanishing while you drew it.** A Drive sync finishing mid-stroke redrew the screen, which replaced the canvas under your pen — the saved strokes came back, the one still being drawn did not. A stroke in progress now holds background redraws back the same way typing does, and the held-back refresh runs the moment you lift the pen. Leaving the edge of the canvas mid-stroke no longer cuts the line in two either.
+
 ## v21 — Ideas
 - **A new Ideas tab**, seventh in the bar. A board with four stages — **Spark · Thinking · Building · Shipped** — plus a Dropped shelf that only appears once something is in it. Type a line, press Enter, it opens. Cards carry their stage colour, a preview, and small marks for sketches, tasks and conversation.
 - **Markdown with a toolbar.** Heading, bold, italic, list, checklist, quote, code, link, divider — the buttons write the markup around your selection. ◉ toggles a rendered preview. Title and body save into the database on every keystroke, so nothing is ever lost and nothing needs a Save button.

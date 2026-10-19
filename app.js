@@ -1661,7 +1661,9 @@ function lockNow() { cryptoKey = null; apiKeyCache = null; IDB.del('key'); db = 
 // A background refresh (sync, timers) must never rebuild the screen while a field is focused —
 // that is what threw the cursor to the start and ate the last characters typed.
 let renderPending = false, renderTimer = null;
+let drawingNow = false;          // true between pointerdown and pointerup on a sketch
 function typingNow() {
+  if (drawingNow) return true;   // a redraw mid-stroke would swap the canvas out from under the pen
   const a = document.activeElement;
   return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.type !== 'checkbox');
 }
@@ -2541,7 +2543,8 @@ function bindSketch(cv) {
     e.pressure && e.pressure > 0 && e.pointerType === 'pen' ? e.pressure : 0.75];
   };
   cv.onpointerdown = e => {
-    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    try { cv.setPointerCapture(e.pointerId); } catch { }
     if (ui.pen.erase) {                       // erase whole strokes — tap the one you want gone
       const [x, y] = at(e); let best = -1, bd = 0.0016;
       (sk.strokes || []).forEach((st, idx) => (st.p || []).forEach(q => {
@@ -2550,13 +2553,22 @@ function bindSketch(cv) {
       if (best >= 0) { sk.strokes.splice(best, 1); touch(idea); paint(null); save({ noRender: true }); }
       return;
     }
-    cur = { c: ui.pen.color, w: ui.pen.w, p: [at(e)] }; paint(cur);
+    cur = { c: ui.pen.color, w: ui.pen.w, p: [at(e)] }; drawingNow = true; paint(cur);
   };
   cv.onpointermove = e => { if (!cur) return; e.preventDefault(); const q = at(e); const l = cur.p[cur.p.length - 1];
     if ((q[0] - l[0]) ** 2 + (q[1] - l[1]) ** 2 < 2e-6) return;      // skip jitter, keeps the stroke small
     cur.p.push([+q[0].toFixed(4), +q[1].toFixed(4), +q[2].toFixed(2)]); paint(cur); };
-  const end = () => { if (!cur) return; if (cur.p.length) { (sk.strokes = sk.strokes || []).push(cur); touch(idea); save({ noRender: true }); } cur = null; paint(null); };
-  cv.onpointerup = end; cv.onpointercancel = end; cv.onpointerleave = end;
+  const end = () => {
+    drawingNow = false;
+    if (cur) {
+      if (cur.p.length) { (sk.strokes = sk.strokes || []).push(cur); touch(idea); save({ noRender: true }); }
+      cur = null; paint(null);
+    }
+    // a background refresh that arrived mid-stroke was held back — let it through now
+    if (renderPending) { renderPending = false; setTimeout(() => { if (!typingNow()) render(); }, 60); }
+  };
+  // no pointerleave here: the capture keeps delivering events, so crossing the edge must not cut the line
+  cv.onpointerup = end; cv.onpointercancel = end; cv.onlostpointercapture = end;
 }
 function addTask() {
   const el = $('#newTask'); const v = el.value.trim(); if (!v) return;
