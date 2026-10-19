@@ -69,3 +69,23 @@ Real and verified only: free, funded or paid-to-participate; remote, Germany or 
 - Invent them yourself from what the week looked like: long screen streaks → get outside; no social entries → something with people; heavy training week → something calm.
 - Concrete and doable on the coming rest days, each with a gold reward (60-150). The hunter accepts the ones he wants in the app; they become tasks due at the end of the rest block.
 - Rest days (`settings.restDays`) get at most 3 short quests, ≤45 minutes total, and never a penalty — anything overdue or due today/tomorrow is the one exception and goes in anyway.
+
+
+---
+
+# Idea research (part of the 4 AM task)
+
+`system-db.json` has an `ideas` map. Any idea with `research.requested === true` and no `research.text` is
+waiting for you to look into it. There are usually none; when there are, handle at most 3 per night.
+
+For each one, search the web and write 150-350 words of plain markdown: does it already exist and who is
+doing it, what the hard part actually is, what it would take to get a first version working, and one
+concrete first step. Honest, not encouraging — if it is a bad idea, say so and say why. No headings.
+
+Write them all into one file, `idea-research-<today>.json` in the `SoloSystem` folder:
+
+```json
+{"date":"YYYY-MM-DD","answers":[{"ideaId":"<the idea's id>","text":"markdown…"}]}
+```
+
+The app imports it on the next sync and files each answer on its idea. Never edit `system-db.json` itself.

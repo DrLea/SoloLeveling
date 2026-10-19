@@ -1,0 +1,1 @@
+Drop the original PNGs from ComfyUI here (any names, any layout - single sprites or sheets). I'll sort, trim, align and rename them into ../troops, ../monarch, ../bg, ../props.

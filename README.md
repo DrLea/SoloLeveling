@@ -4,6 +4,7 @@ A static PWA that you can install on desktop and phone. You don't need a server.
 
 - **Tasks.** Type a task and press Enter, then tick it when it's done. Press the ⌛ chip for a deadline (today / tomorrow / +3 days / +1 week / Saturday / end of month), or type `!tom`, `!3d`, `!fri` at the end of the line. Press ✎ for subtasks, a **Sealed** mark that keeps a task out of the quest system, a reward (text and bonus gold), a difficulty rank from E to S, a stat, and a repeat rule. The repeat rules are: daily, certain weekdays, every N days, N days after you finish, or monthly.
 - **Daily Quest.** Each day the System picks a set of quests you can manage from your tasks. You get a clear reward if you finish them all. If you miss any, a **Penalty Quest** appears the next day. The day resets at 04:00 (UTC+5).
+- **Ideas.** A board for everything you are thinking about, in four stages. Markdown, stylus sketches, search, and a System that will react to an idea, break it into first steps, or research it overnight.
 - **Game layer.** You earn XP and levels, move up through Hunter ranks (E → S → National), and raise five stats (STR/INT/AGI/VIT/PER). You also get streaks, titles to unlock, and a gold **Shop** where you set your own rewards.
 - **Sync** runs through your own Google Drive: `My Drive/SoloSystem/system-db.json` holds the current and previous month; older months live in `system-m-YYYY-MM.json` beside it and are fetched only when you open them.
 - **AI plans.** Claude, run as a scheduled task at 04:00, writes `ai-plan-YYYY-MM-DD.json`. If no plan exists by the fallback hour, the app calls Haiku **once**. When a plan file exists for the day, that day counts as processed, so no second AI call is made.
@@ -100,6 +101,16 @@ Go to **System tab → AI** and paste your Anthropic API key. The default model 
 - **Paid opportunities.** The 4 AM task now also searches for work: remote jobs and contracts (Python/backend/AI/GPU, contractor-friendly) and freelance gigs. They land in a **PAID OPPORTUNITIES** panel on the Quests screen with company, pay, place and a verified link. **apply** opens an application dungeon (read the posting → tailor the CV → write the message → send → follow up in a week), **✕** dismisses. The list refreshes with each day's plan.
 - **Collapsible panels.** PAID OPPORTUNITIES, WEEKLY REVIEW, OPPORTUNITIES and SIDE QUESTS are collapsed by default with a counter of unhandled items in the header; they fold back when you leave the tab.
 - **Fixed:** sharing a dungeon failed with "Drive 400 — invalid JSON payload" because party files were sent to Drive's metadata endpoint instead of its upload endpoint.
+
+## v21 — Ideas
+- **A new Ideas tab**, seventh in the bar. A board with four stages — **Spark · Thinking · Building · Shipped** — plus a Dropped shelf that only appears once something is in it. Type a line, press Enter, it opens. Cards carry their stage colour, a preview, and small marks for sketches, tasks and conversation.
+- **Markdown with a toolbar.** Heading, bold, italic, list, checklist, quote, code, link, divider — the buttons write the markup around your selection. ◉ toggles a rendered preview. Title and body save into the database on every keystroke, so nothing is ever lost and nothing needs a Save button.
+- **Sketching with a stylus.** Any idea holds as many sketch pads as you want. Six pen colours, three widths, stroke eraser, undo, and line width follows pen pressure when your stylus reports it. Sketches are stored as **strokes, not images** — a drawing is a couple of KB instead of a few hundred, stays sharp at any size, and syncs without bloating anything.
+- **Search** across every title and body, live as you type.
+- **Tasks from ideas.** "+ make a task" creates one by hand; the task links back to the idea and the idea lists what came out of it.
+- **The System on an idea.** Three buttons: **React** gives you an honest read — what is strong, what the real risk is, what to resolve first. **Break into tasks** proposes 3-6 concrete first steps and you tick the ones that are real; the idea stays in Ideas either way. **Research it** queues the idea for the 4 AM task, which searches the web overnight and leaves the answer on the card. Everything the System says is kept as a dated thread under the idea, and you can add your own notes to it.
+- **The System no longer invents tasks.** The `newTasks` field is ignored outright — nothing appears in your task list that you did not put there.
+- **Accepted work opportunities are one plain line now**: no steps to tick, rank E, and a 5-gold reward. The payoff is the job, not the XP.
 
 ## v20 — speed
 - **A reload syncs.** Opening or refreshing the page now draws the app from the encrypted local copy first (about 0.2s, everything already there) and then starts a Drive sync on its own, without waiting for you to touch anything. It waits for Google's script if it has to.

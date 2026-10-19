@@ -111,8 +111,27 @@ const DEFAULT_SETTINGS = {
   autoHaiku: true, model: 'claude-haiku-4-5', sound: true, title: '', standing: '', restDays: [6, 0], cls: '', skills: {}, updatedAt: 0
 };
 function emptyDB() {
-  return { schema: 2, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, months: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
+  return { schema: 3, tasks: {}, log: {}, shop: {}, plans: {}, notes: {}, reviews: {}, restDates: {}, months: {}, ideas: {}, settings: { ...DEFAULT_SETTINGS }, security: { updatedAt: 0 } };
 }
+// ---------- ideas
+const STAGES = [
+  { k: 'spark', name: 'Spark', c: '#ffcf5a', hint: 'caught, not yet thought about' },
+  { k: 'thinking', name: 'Thinking', c: '#4fb6ff', hint: 'turning it over' },
+  { k: 'building', name: 'Building', c: '#b07cff', hint: 'actually making it' },
+  { k: 'shipped', name: 'Shipped', c: '#3dffa8', hint: 'it exists' },
+  { k: 'dropped', name: 'Dropped', c: '#7f9bc2', hint: 'let go, kept for the record' }
+];
+const stageOf = k => STAGES.find(x => x.k === k) || STAGES[0];
+const liveIdeas = () => Object.values(db.ideas || {}).filter(i => !i.deleted);
+function newIdea(title = '') {
+  const i = {
+    id: uid(), title: title.trim(), body: '', stage: 'spark', pinned: false,
+    sketches: [], chat: [], taskIds: [], research: null,
+    createdAt: now(), updatedAt: now(), deleted: false
+  };
+  (db.ideas = db.ideas || {})[i.id] = i; return i;
+}
+function ideaTasks(i) { return (i.taskIds || []).map(id => db.tasks[id]).filter(t => t && !t.deleted); }
 // ---------- the archive
 // Only the current and previous month stay in the hot file. Older months are written out to their own
 // Drive file and replaced by a summary that is *exactly* the arithmetic player() would have done —
@@ -181,7 +200,7 @@ let db = emptyDB();
 let cryptoKey = null;          // AES key derived from password (session only)
 let apiKeyCache = null;         // decrypted Anthropic key (memory only)
 let tab = LS.get('ss_tab', 'quests');
-let ui = { showDone: false, showSched: false, showApps: false, skills: false, openTasks: new Set(), panels: new Set(), dlOpen: '' };
+let ui = { showDone: false, showSched: false, showApps: false, skills: false, openTasks: new Set(), panels: new Set(), dlOpen: '', stage: 'spark', ideaOpen: '', ideaQ: '', preview: false, pen: { color: '#d7ebff', w: 2 } };
 
 function S() { return db.settings; }
 function touch(o) { o.updatedAt = now(); return o; }
@@ -326,7 +345,7 @@ function mergeMaps(a = {}, b = {}) {
 function mergeDB(a, b) {
   if (!b) return a; if (!a) return b;
   const m = emptyDB();
-  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews', 'restDates', 'months']) m[c] = mergeMaps(a[c], b[c]);
+  for (const c of ['tasks', 'log', 'shop', 'plans', 'notes', 'reviews', 'restDates', 'months', 'ideas']) m[c] = mergeMaps(a[c], b[c]);
   m.settings = { ...DEFAULT_SETTINGS, ...((b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings) };
   m.security = (b.security?.updatedAt || 0) > (a.security?.updatedAt || 0) ? b.security : a.security;
   return m;
@@ -679,13 +698,9 @@ function applyPlan(p, source) {
     if (u.stat && STATS[u.stat]) t.stat = u.stat;
     touch(t);
   }
-  // 3) new tasks the System assigns (e.g. training)
+  // 3) the System does not invent tasks. `newTasks` in a plan is ignored on purpose —
+  //    the task list is his, and nothing appears in it that he did not put there.
   const refMap = {};
-  for (const n of p.newTasks || []) {
-    const t = newTask(n.title, { origin: 'ai', rank: RANKS.includes(n.rank) ? n.rank : 'E', stat: STATS[n.stat] ? n.stat : guessStat(n.title), notes: n.notes || '', deadline: n.deadline || '' });
-    if (Array.isArray(n.subtasks)) t.subtasks = n.subtasks.map(x => ({ id: uid(), title: String(x), done: false }));
-    refMap[n.ref || n.title] = t.id;
-  }
   // 4) quests
   const quests = [];
   for (const q of p.quests || []) {
@@ -998,13 +1013,12 @@ function acceptSideQuest(date, ref) {
 function acceptPaid(date, ref) {
   const plan = db.plans[date]; const o = plan?.paid?.find(x => x.ref === ref); if (!o) return;
   if (o.accepted && db.tasks[o.taskId]) { const t = db.tasks[o.taskId]; t.deleted = true; touch(t); o.accepted = false; o.taskId = ''; touch(plan); toast('Dropped'); return save(); }
-  const steps = o.subtasks.length ? o.subtasks
-    : ['Read the posting properly', 'Tailor the CV for it', 'Write the message', 'Send the application', 'Follow up in a week'];
+  // one plain line, no steps to tick through, and a token reward — the real payoff is the job
   const t = newTask(o.title + (o.company ? ' — ' + o.company : ''), {
-    origin: 'job', rank: 'C', stat: 'PER', url: o.url, deadline: o.deadline || '',
-    notes: [o.why, o.pay, o.place, o.kind].filter(Boolean).join(' · ')
+    origin: 'job', rank: 'E', stat: 'PER', url: o.url, deadline: o.deadline || '',
+    notes: [o.why, o.pay, o.place, o.kind].filter(Boolean).join(' · '),
+    reward: { text: 'applied', gold: 5 }
   });
-  t.subtasks = steps.map(x => ({ id: uid(), title: x, done: false }));
   o.accepted = true; o.dismissed = false; o.taskId = t.id; touch(plan);
   sfx('level'); popup({ title: 'Application Opened', text: esc(o.title), reward: o.pay ? esc(o.pay) : '' });
   save();
@@ -1086,7 +1100,7 @@ You receive JSON with the hunter's open tasks. Produce TODAY's plan as a single 
 Rules:
 - Pick a manageable set of quests that fits "dailyMinutes" (sum of minutes <= dailyMinutes) and at most "maxQuests" items. Prioritise overdue/near deadlines, pinned tasks, penalty tasks, repeating tasks, then balance stats.
 - If a task is big/vague (rank A/S, or would take > 90 min, or has no subtasks and is multi-step), split it into 3-8 concrete subtasks in "splits", and assign only 1-2 of those subtasks as today's quests (use "subtask" with the exact subtask title).
-- You may add at most 1 small new task in "newTasks" (e.g. a short training or health quest) only if the list is thin.
+- NEVER invent tasks. Only schedule tasks that already exist in his list. There is no "newTasks" field; anything you put there is discarded.
 - XP guidance: E 10, D 20, C 40, B 70, A 120, S 200; subtask quests 10-40. Gold ≈ XP/2.
 - A task's "messageToSystem" is the hunter's instruction for THAT task: follow it when you split it into subtasks and when you decide whether to assign it today.
 - If "isRestDayToday" is true this is a REST DAY: assign at most 3 short quests — only repeating habits, anything overdue or due within 2 days, and accepted side quests. Total minutes <= 45. The message should sound like permission to rest, not a push.
@@ -1099,7 +1113,6 @@ Output schema:
 {"date":"YYYY-MM-DD","title":"Daily Quest: <short theme>","message":"...",
  "splits":[{"taskId":"...","subtasks":["...","..."],"rank":"B"}],
  "updates":[{"taskId":"...","rank":"C","stat":"INT"}],
- "newTasks":[{"ref":"n1","title":"...","rank":"E","stat":"STR"}],
  "quests":[{"taskId":"...","subtask":"optional exact subtask title","newTaskRef":"optional n1","minutes":30,"xp":40,"gold":20,"note":"why today"}],
  "bonus":{"text":"...","xp":60,"gold":40},
  "penalty":{"title":"Penalty Quest: ...","rank":"C","stat":"STR"}}`;
@@ -1137,6 +1150,63 @@ async function anthropic(system, user, maxTokens = 2500) {
   return j.content.map(c => c.text || '').join('');
 }
 function parseJSON(text) { const a = text.indexOf('{'), b = text.lastIndexOf('}'); if (a < 0 || b < a) throw new Error('No JSON in response'); return JSON.parse(text.slice(a, b + 1)); }
+
+
+// ---------- the System thinking about an idea
+function ideaCtx(i) {
+  return JSON.stringify({
+    title: i.title, body: i.body.slice(0, 4000), stage: i.stage,
+    earlier: (i.chat || []).slice(-4).map(c => ({ who: c.role === 'me' ? 'hunter' : 'system', text: c.text.slice(0, 700) })),
+    tasksAlready: ideaTasks(i).map(t => t.title)
+  });
+}
+function ideaSay(i, role, text) {
+  if (!text.trim()) return;
+  (i.chat = i.chat || []).push({ id: uid(), at: now(), day: today(), role, text: text.trim() });
+  if (i.chat.length > 40) i.chat = i.chat.slice(-40);
+  touch(i);
+}
+let ideaBusy = '';
+async function ideaReact(i) {
+  if (ideaBusy) return toast('Still thinking…');
+  ideaBusy = i.id; toast('Thinking…', 60000); render();
+  try {
+    const txt = await anthropic(
+      `You are "The System" from Solo Leveling, thinking with the hunter about one of his ideas. He is a backend engineer (Python, GPU/systems), based in Uzbekistan, job searching.
+Give a short honest read in 3 short paragraphs or fewer: what is genuinely strong in it, what the real risk or hard part is, and the one unknown worth resolving first. Plain markdown, no headings, no flattery, no emoji. If the idea is thin, say what is missing instead of inventing substance. Disagree where you disagree.`,
+      ideaCtx(i), 1200);
+    ideaSay(i, 'system', txt);
+    sfx('level'); toast('The System answered');
+  } catch (e) { toast('AI: ' + e.message, 4000); }
+  finally { ideaBusy = ''; save(); }
+}
+async function ideaSplit(i) {
+  if (ideaBusy) return toast('Still thinking…');
+  ideaBusy = i.id; toast('Breaking it down…', 60000); render();
+  try {
+    const txt = await anthropic(
+      `You turn an idea into first steps for a backend engineer (Python, GPU/systems). Propose 3-6 concrete tasks that each fit in one sitting and move the idea forward in order. Nothing vague ("research X" is only allowed if it names what to find out). Skip anything in tasksAlready.
+Reply ONLY with JSON: {"tasks":[{"title":"...","rank":"E|D|C|B|A|S","stat":"STR|INT|AGI|VIT|PER","why":"one short line"}]}`,
+      ideaCtx(i), 1200);
+    const j = parseJSON(txt);
+    const list = (j.tasks || []).slice(0, 6);
+    if (!list.length) return toast('Nothing concrete came back');
+    pendingSplit = { ideaId: i.id, list };
+    render();
+  } catch (e) { toast('AI: ' + e.message, 4000); }
+  finally { ideaBusy = ''; }
+}
+let pendingSplit = null;
+function acceptSplit(picked) {
+  const i = db.ideas[pendingSplit.ideaId]; const made = [];
+  for (const n of picked) {
+    const t = newTask(n.title, { rank: RANKS.includes(n.rank) ? n.rank : 'D', stat: STATS[n.stat] ? n.stat : guessStat(n.title), notes: n.why || '', ideaId: i.id });
+    (i.taskIds = i.taskIds || []).push(t.id); made.push(t.title);
+  }
+  touch(i); pendingSplit = null;
+  sfx('level'); toast(`${made.length} task${made.length === 1 ? '' : 's'} added — the idea stays here`);
+  save();
+}
 
 let generating = false;
 async function generatePlanHaiku(manual = false) {
@@ -1196,11 +1266,7 @@ const Drive = {
   },
   // must be called from a user gesture (click) for the popup to open
   connect(prompt = '') {
-    if (!this.clientId()) return Promise.reject(new Error('No Google Client ID set'));
-    if (!this.init()) {
-      // the sign-in script hadn't arrived (slow network, or the first load failed) — fetch it again, then carry on
-      return whenGoogle().then(() => { if (!this.init()) throw new Error('Google sign-in failed to start'); return this.connect(prompt); });
-    }
+    if (!this.init()) return Promise.reject(new Error('Google script not loaded or no Client ID'));
     if (this.pending) return new Promise((res, rej) => { const p = this.pending; this.pending = { res: v => { p.res(v); res(v); }, rej: e => { p.rej(e); rej(e); } }; });
     return new Promise((res, rej) => {
       this.pending = { res, rej };
@@ -1286,6 +1352,7 @@ const Drive = {
   },
   async whoami() { try { const r = await this.api('about?fields=user(emailAddress)'); const m = (await r.json())?.user?.emailAddress; if (m) LS.set('ss_email', m); } catch { } },
   async planFiles() { return this.q(`name contains 'ai-plan-' and trashed=false`); },
+  async researchFiles() { return this.q(`name contains 'idea-research-' and trashed=false`); },
   async reviewFiles() { return this.q(`name contains 'weekly-review-' and trashed=false`); },
   async writePlanFile(plan) {
     const name = `ai-plan-${plan.date}.json`;
@@ -1295,20 +1362,12 @@ const Drive = {
   }
 };
 
-// Loads Google's sign-in script, re-injecting it if the copy in index.html never arrived.
-let gisLoading = null;
-function whenGoogle(ms = 12000) {
-  if (window.google?.accounts?.oauth2) return Promise.resolve();
-  return gisLoading ??= new Promise((res, rej) => {
-    const fail = msg => { clearInterval(iv); gisLoading = null; rej(new Error(msg)); };
-    const s = document.createElement('script');
-    s.src = 'https://accounts.google.com/gsi/client?r=' + now();
-    s.async = true;
-    s.onerror = () => fail('Google sign-in script blocked or offline (ad blocker / network?)');
-    document.head.appendChild(s);
+function whenGoogle(ms = 9000) {
+  return new Promise((res, rej) => {
+    if (window.google?.accounts?.oauth2) return res();
     const t0 = now(), iv = setInterval(() => {
-      if (window.google?.accounts?.oauth2) { clearInterval(iv); gisLoading = null; res(); }
-      else if (now() - t0 > ms) fail('Google sign-in script timed out — check your connection');
+      if (window.google?.accounts?.oauth2) { clearInterval(iv); res(); }
+      else if (now() - t0 > ms) { clearInterval(iv); rej(new Error('google script')); }
     }, 120);
   });
 }
@@ -1433,6 +1492,21 @@ async function sync(opts = {}) {
       if (db.plans[date] && db.plans[date].source !== 'local') continue;
       try { const p = parseJSON(await Drive.readText(f)); p.date = date; if (applyPlan(p, p.source || 'claude') && date === d) { sfx('level'); popup({ title: 'Daily Quest Arrived', text: esc(p.message || 'New quests assigned.') }); } } catch (e) { console.warn('bad plan file', f.name, e); }
     }
+    // answers the overnight task left for ideas you asked it to look into
+    if (liveIdeas().some(i => i.research?.requested && !i.research?.text)) {
+      for (const f of await Drive.researchFiles()) {
+        try {
+          const j = parseJSON(await Drive.readText(f));
+          let got = 0;
+          for (const r of (j.answers || [])) {
+            const i = db.ideas?.[r.ideaId];
+            if (!i || i.deleted || !i.research?.requested || i.research.text) continue;
+            i.research = { requested: false, text: String(r.text || ''), day: j.date || today(), at: now() }; touch(i); got++;
+          }
+          if (got) { sfx('level'); popup({ title: 'Research Returned', text: `The System looked into ${got} idea${got === 1 ? '' : 's'} overnight.` }); }
+        } catch (e) { console.warn('bad research file', f.name, e); }
+      }
+    }
     for (const f of revList) {
       const m = f.name.match(/weekly-review-(\d{4}-\d{2}-\d{2})/); if (!m) continue;
       if (m[1] < addDays(d, -10) || db.reviews?.[m[1]]) continue;
@@ -1459,6 +1533,7 @@ async function sync(opts = {}) {
 // last-chance flush when the app is closed or backgrounded
 function flushSync() {
   if (!cryptoKey) return;
+  readIdeaFields();
   persistLocal();
   if (dirty() && Drive.ready()) sync();
 }
@@ -1624,9 +1699,9 @@ function render() {
   renderSync();
   $$('.bottomnav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   const v = $('#view');
-  const fn = { quests: viewQuests, tasks: viewTasks, status: viewStatus, log: viewLog, shop: viewShop, settings: viewSettings }[tab] || viewQuests;
+  const fn = { quests: viewQuests, tasks: viewTasks, ideas: viewIdeas, status: viewStatus, log: viewLog, shop: viewShop, settings: viewSettings }[tab] || viewQuests;
   const snap = snapField();
-  v.innerHTML = fn(p);
+  v.innerHTML = (pendingSplit && tab === 'ideas' ? splitBox() : '') + fn(p);
   bind(v);
   restoreField(snap);
 }
@@ -1646,6 +1721,16 @@ function panel(id, title, count, body, icon) {
       ${icon ? `<span class="sys-icon">${icon}</span>` : ''}${esc(title)}<span class="grow"></span>
       ${count != null ? `<span class="pcount">${count}</span>` : ''}<i>${open ? '\u25be' : '\u25b8'}</i></button>
     ${open ? `<div class="sys-body">${body}</div>` : ''}</div>`;
+}
+function splitBox() {
+  const i = db.ideas?.[pendingSplit.ideaId];
+  return `<div class="sys-window card" id="splitBox" style="border-color:var(--purple)"><div class="sys-head"><span class="sys-icon">◈</span>FIRST STEPS<span class="grow"></span><span class="pcount">${pendingSplit.list.length}</span></div><div class="sys-body">
+    <p class="muted" style="margin-top:0">For <b>${esc(i?.title || '')}</b>. Tick the ones that are real — the idea stays here either way.</p>
+    ${pendingSplit.list.map((t, n) => `<label class="splitrow"><input type="checkbox" class="chk" data-i="${n}" checked>
+      <div class="grow"><b>${esc(t.title)}</b>${t.why ? `<div class="muted" style="font-size:13px">${esc(t.why)}</div>` : ''}</div>
+      <span class="rank ${RANKS.includes(t.rank) ? t.rank : 'D'}">${RANKS.includes(t.rank) ? t.rank : 'D'}</span></label>`).join('')}
+    <div class="row" style="margin-top:12px"><button class="btn" data-act="splitDrop">Discard</button><span class="grow"></span><button class="btn primary" data-act="splitTake">Add the ticked</button></div>
+  </div></div>`;
 }
 function rankBadge(r) { return `<span class="rank ${r}">${r}</span>`; }
 function countdown() { const ms = dayEndTs(today()) - now(); const h = Math.floor(ms / 3600e3), m = Math.floor(ms % 3600e3 / 60e3), s = Math.floor(ms % 60e3 / 1e3); return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
@@ -1993,6 +2078,177 @@ function dayMark(d) {
   if (r) return { cleared: !!r.c, failed: !!r.f, done: r.q || 0, total: r.t || 0, has: !!(r.t || r.x || r.n) };
   return { cleared: false, failed: false, done: 0, total: 0, has: false };
 }
+
+// ---------- a small markdown renderer: escape first, then mark up. Nothing from the text can become HTML.
+function md(src) {
+  const code = [];
+  let t = esc(String(src || ''));
+  t = t.replace(/```([\s\S]*?)```/g, (m, c) => `\u0000C${code.push(`<pre class="mdc">${c.replace(/^\n/, '')}</pre>`) - 1}\u0000`);
+  t = t.replace(/`([^`\n]+)`/g, (m, c) => `\u0000C${code.push(`<code>${c}</code>`) - 1}\u0000`);
+  const lines = t.split('\n'), out = [];
+  let list = null;
+  const closeList = () => { if (list) { out.push(list === 'ul' ? '</ul>' : '</ol>'); list = null; } };
+  for (let raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    let m;
+    if (/^\s*---+\s*$/.test(line)) { closeList(); out.push('<hr>'); continue; }
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { closeList(); const n = m[1].length; out.push(`<h${n + 2} class="mdh">${m[2]}</h${n + 2}>`); continue; }
+    if ((m = line.match(/^\s*&gt;\s?(.*)$/))) { closeList(); out.push(`<blockquote>${m[1]}</blockquote>`); continue; }
+    if ((m = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)$/))) {
+      if (list !== 'ul') { closeList(); out.push('<ul class="mdl">'); list = 'ul'; }
+      out.push(`<li class="mdck ${m[1] === ' ' ? '' : 'on'}">${m[2]}</li>`); continue;
+    }
+    if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      if (list !== 'ul') { closeList(); out.push('<ul class="mdl">'); list = 'ul'; }
+      out.push(`<li>${m[1]}</li>`); continue;
+    }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      if (list !== 'ol') { closeList(); out.push('<ol class="mdl">'); list = 'ol'; }
+      out.push(`<li>${m[1]}</li>`); continue;
+    }
+    closeList();
+    out.push(line.trim() ? `<p>${line}</p>` : '');
+  }
+  closeList();
+  t = out.join('\n');
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+  t = t.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  t = t.replace(/\u0000C(\d+)\u0000/g, (m, i) => code[+i]);
+  return t;
+}
+const mdPlain = src => String(src || '').replace(/[#*`>\[\]()\-]/g, ' ').replace(/\s+/g, ' ').trim();
+
+// ---------- sketches: strokes, not pixels. Points are 0..1 so a sketch is sharp at any size and tiny to sync.
+function drawSketch(cv, sk, live) {
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const all = live ? [...(sk.strokes || []), ...(live ? [live] : [])] : (sk.strokes || []);
+  for (const st of all) {
+    const p = st.p || []; if (!p.length) continue;
+    ctx.strokeStyle = st.c || '#d7ebff';
+    if (p.length === 1) { ctx.fillStyle = st.c || '#d7ebff'; ctx.beginPath(); ctx.arc(p[0][0] * W, p[0][1] * H, (st.w || 2) * (p[0][2] || 1) / 2, 0, 7); ctx.fill(); continue; }
+    for (let i = 1; i < p.length; i++) {
+      ctx.lineWidth = Math.max(0.6, (st.w || 2) * ((p[i][2] || 1) * 0.7 + 0.5));
+      ctx.beginPath(); ctx.moveTo(p[i - 1][0] * W, p[i - 1][1] * H); ctx.lineTo(p[i][0] * W, p[i][1] * H); ctx.stroke();
+    }
+  }
+}
+const PEN_COLORS = ['#d7ebff', '#4fb6ff', '#b07cff', '#ffcf5a', '#ff4d6d', '#3dffa8'];
+
+// ---------- the board
+function ideaCard(i) {
+  const st = stageOf(i.stage);
+  const body = mdPlain(i.body).slice(0, 110);
+  const tasks = ideaTasks(i);
+  return `<div class="idea" style="--sc:${st.c}" data-act="ideaOpen" data-id="${i.id}">
+    <div class="irow"><b class="it">${esc(i.title || 'Untitled')}</b>${i.pinned ? '<span class="ipin">★</span>' : ''}</div>
+    ${body ? `<div class="ib">${esc(body)}</div>` : ''}
+    <div class="imeta">
+      ${(i.sketches || []).length ? `<span>✎ ${i.sketches.length}</span>` : ''}
+      ${tasks.length ? `<span>◈ ${tasks.filter(t => t.done).length}/${tasks.length}</span>` : ''}
+      ${(i.chat || []).length ? `<span>◌ ${i.chat.length}</span>` : ''}
+      ${i.research?.text ? '<span>⌖ researched</span>' : i.research?.requested ? '<span class="pend">⌖ overnight</span>' : ''}
+      <span class="grow"></span><span class="muted">${esc(fmtDay(dayKey(i.updatedAt)))}</span>
+    </div></div>`;
+}
+function viewIdeas() {
+  if (ui.ideaOpen && db.ideas?.[ui.ideaOpen] && !db.ideas[ui.ideaOpen].deleted) return viewIdea(db.ideas[ui.ideaOpen]);
+  const q = (ui.ideaQ || '').trim().toLowerCase();
+  const all = liveIdeas();
+  const counts = {}; STAGES.forEach(st => counts[st.k] = all.filter(i => i.stage === st.k).length);
+  let list = q
+    ? all.filter(i => (i.title + ' ' + i.body).toLowerCase().includes(q))
+    : all.filter(i => i.stage === ui.stage);
+  list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updatedAt - a.updatedAt);
+  let h = `<div class="add-row"><input id="newIdea" placeholder="What are you thinking?" enterkeyhint="done" autocomplete="off"><button class="btn primary" data-act="ideaAdd">+</button></div>
+    <div class="row" style="margin:0 0 10px"><input id="ideaQ" class="grow" placeholder="⌕ search every idea" value="${esc(ui.ideaQ || '')}">${q ? `<button class="btn small" data-act="ideaQclear">✕</button>` : ''}</div>`;
+  if (!q) {
+    h += `<div class="stages">${STAGES.filter(st => st.k !== 'dropped' || counts.dropped).map(st => `<button class="stg ${ui.stage === st.k ? 'on' : ''}" style="--sc:${st.c}" data-act="stage" data-id="${st.k}">${st.name}<i>${counts[st.k]}</i></button>`).join('')}</div>
+      <p class="muted" style="font-size:12.5px;margin:-2px 2px 10px">${esc(stageOf(ui.stage).hint)}</p>`;
+  } else {
+    h += `<div class="section-title">FOUND <span>${list.length}</span></div>`;
+  }
+  h += list.length ? list.map(ideaCard).join('')
+    : `<div class="empty">${q ? 'Nothing matches.' : ui.stage === 'spark' ? 'No sparks yet. Write one above — anything, however half-formed.' : 'Nothing here yet.'}</div>`;
+  return h;
+}
+
+const MD_TOOLS = [
+  { k: 'h', label: 'H', t: 'Heading', wrap: ['## ', ''], line: true },
+  { k: 'b', label: '<b>B</b>', t: 'Bold', wrap: ['**', '**'] },
+  { k: 'i', label: '<i>I</i>', t: 'Italic', wrap: ['*', '*'] },
+  { k: 'ul', label: '•', t: 'List', wrap: ['- ', ''], line: true },
+  { k: 'ck', label: '☑', t: 'Checklist', wrap: ['- [ ] ', ''], line: true },
+  { k: 'q', label: '“', t: 'Quote', wrap: ['> ', ''], line: true },
+  { k: 'c', label: '&lt;/&gt;', t: 'Code', wrap: ['`', '`'] },
+  { k: 'l', label: '⧉', t: 'Link', wrap: ['[', '](https://)'] },
+  { k: 'hr', label: '—', t: 'Divider', wrap: ['\n---\n', ''], line: true }
+];
+function viewIdea(i) {
+  const st = stageOf(i.stage);
+  let h = `<div class="row" style="margin-bottom:10px">
+      <button class="btn small" data-act="ideaBack">‹ Board</button><span class="grow"></span>
+      <button class="icon-btn ${i.pinned ? 'on' : ''}" data-act="ideaPin" data-id="${i.id}" title="Pin to the top">★</button>
+      <button class="icon-btn" data-act="ideaDel" data-id="${i.id}" title="Delete">✕</button></div>
+    <div class="sys-window card" style="--sc:${st.c}"><div class="sys-body">
+      <input id="idTitle" class="idtitle" placeholder="Title" value="${esc(i.title)}">
+      <div class="stages sm">${STAGES.map(x => `<button class="stg ${i.stage === x.k ? 'on' : ''}" style="--sc:${x.c}" data-act="ideaStage" data-id="${i.id}" data-sub="${x.k}">${x.name}</button>`).join('')}</div>
+      <div class="mdbar">${MD_TOOLS.map(t => `<button class="mdt" data-act="mdt" data-id="${t.k}" title="${t.t}">${t.label}</button>`).join('')}
+<button class="mdt ${ui.preview ? 'on' : ''}" data-act="mdPrev" title="${ui.preview ? 'Back to editing' : 'Preview'}">◉</button></div>
+      ${ui.preview
+      ? `<div class="mdview">${i.body.trim() ? md(i.body) : '<p class="muted">Nothing written yet.</p>'}</div>`
+      : `<textarea id="idBody" class="idbody" placeholder="Think out loud. Markdown works — the buttons above write it for you.">${esc(i.body)}</textarea>`}
+      <p class="muted" style="font-size:12px;margin:6px 0 0"><span id="idSaved"></span></p>
+    </div></div>`;
+
+  // sketches
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">✎</span>SKETCHES<span class="grow"></span>
+      <button class="btn small" data-act="skAdd" data-id="${i.id}">+ new</button></div><div class="sys-body">`;
+  if (!(i.sketches || []).length) h += `<p class="muted" style="margin:0">Nothing drawn yet. A diagram often says it faster than a paragraph.</p>`;
+  for (const sk of (i.sketches || [])) {
+    h += `<div class="sketch" data-sk="${sk.id}">
+      <div class="pentools">
+        ${PEN_COLORS.map(c => `<button class="pc ${ui.pen.color === c ? 'on' : ''}" style="--pc:${c}" data-act="penC" data-id="${c}"></button>`).join('')}
+        ${[1.5, 3, 6].map(w => `<button class="pw ${ui.pen.w === w ? 'on' : ''}" data-act="penW" data-id="${w}"><i style="width:${w * 2}px;height:${w * 2}px"></i></button>`).join('')}
+        <button class="pw ${ui.pen.erase ? 'on' : ''}" data-act="penE" title="Eraser — tap a stroke to remove it">⌫</button>
+        <span class="grow"></span>
+        <button class="mdt" data-act="skUndo" data-id="${i.id}" data-sub="${sk.id}" title="Undo">↶</button>
+        <button class="mdt" data-act="skDel" data-id="${i.id}" data-sub="${sk.id}" title="Delete sketch">✕</button>
+      </div>
+      <canvas class="skc" data-idea="${i.id}" data-id="${sk.id}" width="${sk.w || 900}" height="${sk.h || 520}"></canvas>
+      <p class="muted" style="font-size:12px;margin:4px 0 0">${(sk.strokes || []).length} stroke${(sk.strokes || []).length === 1 ? '' : 's'} · pressure-sensitive if your stylus reports it</p>
+    </div>`;
+  }
+  h += `</div></div>`;
+
+  // tasks born from this idea
+  const ts = ideaTasks(i);
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◈</span>TASKS FROM THIS<span class="grow"></span>
+      <button class="btn small" data-act="ideaToTask" data-id="${i.id}">+ make a task</button></div><div class="sys-body">`;
+  h += ts.length
+    ? ts.map(t => `<div class="shop-item"><div class="grow ${t.done ? 'muted' : ''}">${t.done ? '✓ ' : ''}${esc(t.title)}</div>${rankBadge(t.rank)}<button class="icon-btn" data-act="edit" data-id="${t.id}">${ICON.edit}</button></div>`).join('')
+    : `<p class="muted" style="margin:0">Nothing has come out of this yet.</p>`;
+  h += `</div></div>`;
+
+  // the System's side of the conversation
+  h += `<div class="sys-window card"><div class="sys-head"><span class="sys-icon">◌</span>THE SYSTEM ON THIS</div><div class="sys-body">
+    <div class="row wrap" style="margin-top:0">
+      <button class="btn small ${db.security?.apiKey ? 'primary' : ''}" data-act="ideaReact" data-id="${i.id}" ${db.security?.apiKey ? '' : 'disabled'}>React to it</button>
+      <button class="btn small" data-act="ideaSplit" data-id="${i.id}" ${db.security?.apiKey ? '' : 'disabled'}>Break into tasks</button>
+      <button class="btn small ${i.research?.requested && !i.research?.text ? 'on' : ''}" data-act="ideaResearch" data-id="${i.id}">${i.research?.requested && !i.research?.text ? '⌖ queued for tonight' : '⌖ Research it'}</button>
+    </div>
+    <p class="muted" style="font-size:12px;margin:8px 0 0">The first two cost one API request each. Research runs overnight with the 4 AM task — free, but you read it tomorrow.</p>`;
+  if (i.research?.text) h += `<div class="mdview rsrch"><div class="rshead">⌖ Research · ${esc(fmtDay(i.research.day || ''))}</div>${md(i.research.text)}</div>`;
+  for (const c of [...(i.chat || [])].reverse()) {
+    h += `<div class="ichat ${c.role}"><div class="ichead">${c.role === 'me' ? 'You' : 'The System'} · ${esc(fmtDay(c.day || dayKey(c.at)))}
+      <span class="grow"></span><button class="icon-btn" data-act="chatDel" data-id="${i.id}" data-sub="${c.id}">✕</button></div>
+      <div class="mdview">${md(c.text)}</div></div>`;
+  }
+  h += `<div class="row" style="margin-top:12px"><input id="idSay" class="grow" placeholder="Add your own note to the thread…"><button class="btn small" data-act="ideaSay" data-id="${i.id}">add</button></div>`;
+  h += `</div></div>`;
+  return h;
+}
 function viewLog(p) {
   const sub = ui.logSub || 'cal';
   let head = `<div class="chips" style="margin-bottom:12px"><button class="chip ${sub === 'cal' ? 'on' : ''}" data-act="logSub" data-id="cal">Calendar</button><button class="chip ${sub === 'an' ? 'on' : ''}" data-act="logSub" data-id="an">Analytics</button></div>`;
@@ -2205,15 +2461,56 @@ $('#modal').addEventListener('click', async e => {
 });
 $('#modal').addEventListener('change', e => { if (e.target.id === 'eRepeat') { readEditFields(); renderEdit(); } });
 $('#modal').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'eNewSub') { e.preventDefault(); $('[data-m=subadd]').click(); } });
+let skipPop = false;
 function closeModal(fromBack) {
   $('#modal').classList.add('hidden'); editing = null; asking = null;
-  if (!fromBack && history.state?.modal) history.back();
+  // going back to undo the dialog's own history entry must not also close the idea behind it
+  if (!fromBack && history.state?.modal) { skipPop = true; history.back(); }
 }
 function confirmInline(b, txt) { if (b.dataset.confirm) return true; b.dataset.confirm = 1; b.textContent = txt; setTimeout(() => { delete b.dataset.confirm; }, 3000); return false; }
 
+// ---------- ideas: editor plumbing
+function readIdeaFields() {
+  const i = ui.ideaOpen && db.ideas?.[ui.ideaOpen]; if (!i) return;
+  const t = $('#idTitle'), b = $('#idBody');
+  let ch = false;
+  if (t && t.value.trim() !== i.title) { i.title = t.value.trim(); ch = true; }
+  if (b && b.value !== i.body) { i.body = b.value; ch = true; }
+  if (ch) touch(i);
+}
+function mdInsert(key) {
+  const tool = MD_TOOLS.find(t => t.k === key); const el = $('#idBody'); if (!tool || !el) return;
+  const [a, z] = tool.wrap; const s0 = el.selectionStart, s1 = el.selectionEnd;
+  let v = el.value, start = s0, end = s1;
+  if (tool.line) {                              // line tools go at the head of the line
+    start = v.lastIndexOf('\n', s0 - 1) + 1; end = start;
+    el.value = v.slice(0, start) + a + v.slice(start);
+    el.selectionStart = el.selectionEnd = s0 + a.length;
+  } else {
+    const sel = v.slice(s0, s1) || '';
+    el.value = v.slice(0, s0) + a + sel + z + v.slice(s1);
+    el.selectionStart = s0 + a.length; el.selectionEnd = s0 + a.length + sel.length;
+  }
+  el.focus();
+  const i = db.ideas[ui.ideaOpen]; i.body = el.value; touch(i); save({ noRender: true });
+}
 // ---------- EVENTS
 let noteT = null;
 function bind(v) {
+  // ideas: title and body save straight into the database as you type, like the daily note
+  const it = $('#idTitle', v), ib = $('#idBody', v), iq = $('#ideaQ', v), ni = $('#newIdea', v), isay = $('#idSay', v);
+  if (ni) ni.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('[data-act=ideaAdd]')?.click(); } };
+  // search redraws as you type — render() puts the caret back, so the guard that protects typing isn't needed here
+  if (iq) iq.oninput = () => { ui.ideaQ = iq.value; clearTimeout(noteT); noteT = setTimeout(() => { if (tab === 'ideas' && !ui.ideaOpen) render(); }, 200); };
+  if (isay) isay.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('[data-act=ideaSay]')?.click(); } };
+  const mark = () => { const el = $('#idSaved'); if (el) { el.textContent = '✓ saved'; clearTimeout(noteT); noteT = setTimeout(() => { const e2 = $('#idSaved'); if (e2) e2.textContent = ''; }, 1500); } };
+  if (it) it.oninput = () => { const i = db.ideas[ui.ideaOpen]; if (i) { i.title = it.value.trim(); touch(i); save({ noRender: true }); mark(); } };
+  if (ib) {
+    const grow = () => { ib.style.height = 'auto'; ib.style.height = Math.max(180, Math.min(900, ib.scrollHeight + 4)) + 'px'; };
+    grow();
+    ib.oninput = () => { const i = db.ideas[ui.ideaOpen]; if (i) { i.body = ib.value; touch(i); save({ noRender: true }); grow(); mark(); } };
+  }
+  $$('.skc', v).forEach(bindSketch);
   $$('.dlinp', v).forEach(el => { el.onchange = () => { const t = db.tasks[el.dataset.dl]; if (t) { ui.dlOpen = ''; setDeadline(t, el.value); } }; });
   const nt = $('#newTask', v);
   if (nt) nt.onkeydown = e => { if (e.key === 'Enter') addTask(); };
@@ -2230,6 +2527,36 @@ function bind(v) {
       clearTimeout(noteT); noteT = setTimeout(() => { const s2 = $('#noteSaved'); if (s2) s2.textContent = ''; }, 1500);
     };
   }
+}
+// one canvas: draw with a finger, a mouse or a stylus; pressure drives the width when it is reported
+function bindSketch(cv) {
+  const idea = db.ideas?.[cv.dataset.idea]; if (!idea) return;
+  const sk = (idea.sketches || []).find(x => x.id === cv.dataset.id); if (!sk) return;
+  const paint = live => drawSketch(cv, sk, live);
+  paint(null);
+  let cur = null;
+  const at = e => {
+    const r = cv.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    e.pressure && e.pressure > 0 && e.pointerType === 'pen' ? e.pressure : 0.75];
+  };
+  cv.onpointerdown = e => {
+    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    if (ui.pen.erase) {                       // erase whole strokes — tap the one you want gone
+      const [x, y] = at(e); let best = -1, bd = 0.0016;
+      (sk.strokes || []).forEach((st, idx) => (st.p || []).forEach(q => {
+        const d = (q[0] - x) ** 2 + (q[1] - y) ** 2; if (d < bd) { bd = d; best = idx; }
+      }));
+      if (best >= 0) { sk.strokes.splice(best, 1); touch(idea); paint(null); save({ noRender: true }); }
+      return;
+    }
+    cur = { c: ui.pen.color, w: ui.pen.w, p: [at(e)] }; paint(cur);
+  };
+  cv.onpointermove = e => { if (!cur) return; e.preventDefault(); const q = at(e); const l = cur.p[cur.p.length - 1];
+    if ((q[0] - l[0]) ** 2 + (q[1] - l[1]) ** 2 < 2e-6) return;      // skip jitter, keeps the stroke small
+    cur.p.push([+q[0].toFixed(4), +q[1].toFixed(4), +q[2].toFixed(2)]); paint(cur); };
+  const end = () => { if (!cur) return; if (cur.p.length) { (sk.strokes = sk.strokes || []).push(cur); touch(idea); save({ noRender: true }); } cur = null; paint(null); };
+  cv.onpointerup = end; cv.onpointercancel = end; cv.onpointerleave = end;
 }
 function addTask() {
   const el = $('#newTask'); const v = el.value.trim(); if (!v) return;
@@ -2256,6 +2583,42 @@ document.addEventListener('click', async e => {
     }, v => { t.hint = v.slice(0, 500); touch(t); toast(v ? '💬 saved' : 'message cleared'); save(); });
     case 'toToday': return toggleToday(t, b.dataset.sub || null);
     case 'tgSkills': ui.skills = !ui.skills; return render();
+    // ----- ideas
+    case 'ideaAdd': { const el = $('#newIdea'); const v = el.value.trim(); if (!v) return; el.value = ''; const i = newIdea(v); i.stage = ui.stage === 'dropped' ? 'spark' : ui.stage; ui.ideaOpen = i.id; sfx('tick'); return save(); }
+    case 'ideaOpen': ui.ideaOpen = id; ui.preview = false; history.pushState({ tab }, ''); return render();
+    case 'ideaBack': readIdeaFields(); ui.ideaOpen = ''; return save();
+    case 'stage': ui.stage = id; return render();
+    case 'ideaQclear': { ui.ideaQ = ''; const el = $('#ideaQ'); if (el) { el.value = ''; el.blur(); } return render(); }
+    case 'ideaStage': { const i = db.ideas[id]; readIdeaFields(); i.stage = b.dataset.sub; touch(i); sfx('tick'); return save(); }
+    case 'ideaPin': { const i = db.ideas[id]; i.pinned = !i.pinned; touch(i); return save(); }
+    case 'ideaDel': { if (!confirmInline(b, 'Delete?')) return; const i = db.ideas[id]; i.deleted = true; touch(i); ui.ideaOpen = ''; toast('Deleted'); return save(); }
+    case 'mdPrev': readIdeaFields(); ui.preview = !ui.preview; return render();
+    case 'mdt': return mdInsert(id);
+    case 'ideaSay': { const i = db.ideas[id]; const el = $('#idSay'); const v = el.value.trim(); if (!v) return; el.value = ''; readIdeaFields(); ideaSay(i, 'me', v); return save(); }
+    case 'chatDel': { const i = db.ideas[id]; i.chat = (i.chat || []).filter(c => c.id !== b.dataset.sub); touch(i); return save(); }
+    case 'ideaReact': { readIdeaFields(); if (!confirmInline(b, '1 request — go?')) return; return ideaReact(db.ideas[id]); }
+    case 'ideaSplit': { readIdeaFields(); if (!confirmInline(b, '1 request — go?')) return; return ideaSplit(db.ideas[id]); }
+    case 'splitTake': { const picks = $$('#splitBox input:checked').map(x => pendingSplit.list[+x.dataset.i]); if (!picks.length) return toast('Tick at least one'); return acceptSplit(picks); }
+    case 'splitDrop': pendingSplit = null; return render();
+    case 'ideaResearch': {
+      const i = db.ideas[id];
+      if (i.research?.requested && !i.research?.text) { i.research = null; touch(i); toast('Cancelled'); return save(); }
+      readIdeaFields(); i.research = { requested: true, at: now(), day: today() }; touch(i);
+      toast('Queued — the 4 AM task will look into it tonight'); return save();
+    }
+    case 'ideaToTask': {
+      const i = db.ideas[id]; readIdeaFields();
+      return askText({ title: 'New task from this idea', label: 'What is the next real step?', value: i.title, ok: 'Create' }, v => {
+        if (!v) return; const t = newTask(v, { notes: 'from idea: ' + i.title, ideaId: i.id });
+        (i.taskIds = i.taskIds || []).push(t.id); touch(i); sfx('tick'); toast('Task created'); save();
+      });
+    }
+    case 'skAdd': { const i = db.ideas[id]; readIdeaFields(); (i.sketches = i.sketches || []).push({ id: uid(), strokes: [], w: 900, h: 520, at: now() }); touch(i); return save(); }
+    case 'skDel': { if (!confirmInline(b, 'Delete?')) return; const i = db.ideas[id]; i.sketches = (i.sketches || []).filter(x => x.id !== b.dataset.sub); touch(i); return save(); }
+    case 'skUndo': { const i = db.ideas[id]; const sk = (i.sketches || []).find(x => x.id === b.dataset.sub); if (sk && sk.strokes.length) { sk.strokes.pop(); touch(i); save(); } return; }
+    case 'penC': ui.pen.color = id; ui.pen.erase = false; return render();
+    case 'penW': ui.pen.w = +id; ui.pen.erase = false; return render();
+    case 'penE': ui.pen.erase = !ui.pen.erase; return render();
     case 'tgApps': ui.showApps = !ui.showApps; return render();
     case 'dlOpen': ui.dlOpen = ui.dlOpen === id ? '' : id; return render();
     case 'dlSet': { const k = b.dataset.sub; ui.dlOpen = ''; setDeadline(t, k === 'clear' ? '' : chipDate(k)); return; }
@@ -2419,11 +2782,14 @@ document.addEventListener('pointerdown', () => {
 
 // ---------- Android back button: go one step back instead of closing the app
 function go(t) {
-  if (t === tab) { render(); window.scrollTo(0, 0); return; }   // tapping the current tab just refreshes it
+  if (t === tab) { if (tab === 'ideas' && ui.ideaOpen) { readIdeaFields(); ui.ideaOpen = ''; save(); return; } render(); window.scrollTo(0, 0); return; }
+  if (ui.ideaOpen) { readIdeaFields(); ui.ideaOpen = ''; }
   tab = t; LS.set('ss_tab', t); ui.openTasks.clear(); ui.panels.clear(); history.pushState({ tab: t }, ''); render(); window.scrollTo(0, 0);
 }
 window.addEventListener('popstate', e => {
+  if (skipPop) { skipPop = false; return; }                                  // that pop was the dialog closing itself
   if (!$('#modal').classList.contains('hidden')) { closeModal(true); return; }
+  if (ui.ideaOpen) { readIdeaFields(); ui.ideaOpen = ''; save(); return; }   // an open idea closes before the tab changes
   const st = e.state || {};
   if (st.tab && st.tab !== tab) { tab = st.tab; LS.set('ss_tab', tab); render(); window.scrollTo(0, 0); }
   else if (!st.tab && tab !== 'quests') { tab = 'quests'; LS.set('ss_tab', tab); render(); }
